@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 本地设置 (Claude Code 权限等, 仅本地)
+.claude/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 临时文件
+*.log

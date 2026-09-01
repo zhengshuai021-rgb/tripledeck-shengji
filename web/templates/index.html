@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三副牌升级 · Web GUI v1.0</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  width: 100vw; height: 100vh; overflow: hidden;
+  background: #0d6b3e; color: #ecf0f1;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+  display: flex; flex-direction: column;
+}
+.top-frame {
+  height: 50px; background: #2c3e50;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; flex: 0 0 auto;
+}
+.title { font-size: 15px; font-weight: 700; margin-right: 4px; white-space: nowrap; }
+.subtitle { font-size: 10px; color: #bdc3c7; white-space: nowrap; margin-right: 6px; }
+button {
+  border: 0; height: 34px; padding: 0 14px; border-radius: 0;
+  color: white; cursor: pointer; font-family: inherit; font-size: 12px;
+}
+button:disabled { opacity: .45; cursor: not-allowed; }
+.btn-start { background: #27ae60; }
+.btn-step { background: #2980b9; }
+.btn-auto { background: #34495e; color: #ecf0f1; }
+.btn-auto.running { background: #e67e22; color: white; }
+.btn-reset { background: #c0392b; }
+.label { font-size: 11px; color: #ecf0f1; white-space: nowrap; }
+select, input {
+  height: 24px; background: #3d566e; color: white; border: 0; outline: 0;
+  font-size: 12px; text-align: center;
+}
+select { width: 64px; }
+input { width: 60px; }
+.status-top { flex: 1; text-align: center; font-size: 12px; color: #ecf0f1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.canvas-wrap { flex: 1 1 auto; min-height: 0; padding: 2px; background: #0d6b3e; }
+#gameCanvas { display: block; width: 100%; height: 100%; background: #0f7a44; cursor: pointer; }
+.status-bar {
+  height: 22px; background: #2c3e50; color: #ecf0f1; font-size: 10px;
+  padding: 3px 10px; flex: 0 0 auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.hidden { display: none; }
+.modal {
+  width: 480px; min-height: 380px; background: #1a2a3a; color: #ecf0f1;
+  padding: 16px 24px 14px; box-shadow: 0 12px 36px rgba(0,0,0,.35);
+}
+.modal h2 { text-align: center; color: #f1c40f; font-size: 18px; margin-bottom: 6px; }
+.modal .result { text-align: center; color: #f1c40f; font-size: 15px; margin-bottom: 10px; }
+.modal table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.modal th, .modal td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #34495e; }
+.modal th { color: #bdc3c7; width: 120px; }
+.modal .actions { text-align: center; margin-top: 16px; }
+.modal .actions button { width: 180px; height: 50px; background: #2980b9; font-size: 14px; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="top-frame">
+  <div class="title">🎴 三副牌升级</div>
+  <span class="subtitle">v1.0 · 全自动对局</span>
+  <button class="btn-start" id="btnStart">▶ 开始</button>
+  <button class="btn-step" id="btnStep" disabled>▶ 下一步</button>
+  <button class="btn-auto" id="btnAuto" disabled>▶▶ 自动</button>
+  <button class="btn-reset" id="btnReset">🔄 重置</button>
+  <span class="label">延迟:</span>
+  <select id="speedSel">
+    <option value="800">慢速</option>
+    <option value="400" selected>中速</option>
+    <option value="150">快速</option>
+    <option value="40">极速</option>
+  </select>
+  <span class="label">种子:</span><input id="seedInput" placeholder="随机">
+  <div class="status-top" id="statusTop">就绪 | 点击「开始」启动游戏</div>
+</div>
+<div class="canvas-wrap"><canvas id="gameCanvas"></canvas></div>
+<div class="status-bar" id="statusBar">就绪 | 点击「开始」启动游戏</div>
+
+<div class="modal-overlay hidden" id="settleModal">
+  <div class="modal">
+    <h2 id="modalTitle">第 1 局结算</h2>
+    <div class="result" id="modalResult"></div>
+    <table id="modalTable"></table>
+    <div class="actions"><button id="modalContinue">继续</button></div>
+  </div>
+</div>
+
+<script>
+const SUIT_CN = {'♠':'黑桃','♥':'红桃','♣':'草花','♦':'方块'};
+const SCORE_VALUES = {'5':5, '10':10, 'K':10};
+const PATTERN_CN = {'single':'单张','pair':'对子','triplet':'刻子','tractor':'拖拉机','bulldozer':'推土机','throw':'甩牌'};
+
+let sessionId = null;
+let gameData = null;
+let autoRunning = false;
+let autoTimer = null;
+let speed = 400;
+let modalShownFor = null;
+let revealNum = -1;      // 当前正在逐张亮牌的一圈编号
+let revealShown = 0;     // 已亮到第几位玩家
+let animating = false;   // 是否正在亮牌动画中
+let animTimer = null;
+let lastRound = -1;
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  renderCanvas();
+}
+window.addEventListener('resize', resizeCanvas);
+
+function colorFor(card) {
+  if (!card) return '#1a1a2e';
+  if (card.rank === '大王') return '#c0392b';
+  if (card.rank === '小王') return '#1a1a2e';
+  return (card.suit === '♥' || card.suit === '♦') ? '#c0392b' : '#1a1a2e';
+}
+
+function isMainCard(card) {
+  const rr = gameData?.round_record;
+  if (!card || !rr || !rr.level) return false;
+  if (card.rank === '大王' || card.rank === '小王') return true;
+  if (card.rank === rr.level) return true;
+  if (card.rank === '2') return true;
+  if (rr.trump_suit && card.suit === rr.trump_suit) return true;
+  return false;
+}
+
+function roundRectPath(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y);
+  c.quadraticCurveTo(x + w, y, x + w, y + r);
+  c.lineTo(x + w, y + h - r);
+  c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  c.lineTo(x + r, y + h);
+  c.quadraticCurveTo(x, y + h, x, y + h - r);
+  c.lineTo(x, y + r);
+  c.quadraticCurveTo(x, y, x + r, y);
+  c.closePath();
+}
+
+function drawText(c, text, x, y, font, color, align = 'center', baseline = 'middle') {
+  c.font = font; c.fillStyle = color;
+  c.textAlign = align; c.textBaseline = baseline;
+  c.fillText(text, x, y);
+}
+
+function cardLabel(card) {
+  if (card.rank === '大王' || card.rank === '小王') return card.rank;
+  return `${card.rank}${card.suit}`;
+}
+
+// 迷你手牌
+function drawMiniCard(c, x, y, card, opts = {}) {
+  const w = opts.w || 24, h = opts.h || 36;
+  roundRectPath(c, x, y, w, h, 3);
+  c.fillStyle = 'white'; c.fill();
+  c.strokeStyle = opts.highlight ? '#e74c3c' : '#bdc3c7';
+  c.lineWidth = opts.highlight ? 2 : 1;
+  c.stroke();
+  c.fillStyle = colorFor(card);
+  if (opts.topLabel) {
+    c.font = opts.topFont || 'bold 9px "Microsoft YaHei"';
+    c.textAlign = 'left'; c.textBaseline = 'top';
+    c.fillText(cardLabel(card), x + 2, y + 1);
+  } else {
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = 'bold 11px "Microsoft YaHei"';
+    c.fillText(cardLabel(card), x + w / 2, y + h / 2);
+  }
+  if (isMainCard(card)) {
+    c.fillStyle = '#f1c40f';
+    c.font = '7px "Microsoft YaHei"';
+    c.textAlign = 'right'; c.textBaseline = 'top';
+    c.fillText('★', x + w - 3, y + 2);
+  }
+}
+
+// 桌面中央大牌
+function drawBigCard(c, x, y, card, opts = {}) {
+  const w = 56, h = 80;
+  roundRectPath(c, x, y, w, h, 5);
+  c.fillStyle = 'white'; c.fill();
+  c.strokeStyle = opts.highlight ? '#e74c3c' : '#bdc3c7';
+  c.lineWidth = opts.highlight ? 2.5 : 1;
+  c.stroke();
+  c.fillStyle = colorFor(card);
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  if (card.rank === '大王' || card.rank === '小王') {
+    c.font = 'bold 17px "Microsoft YaHei"';
+  } else {
+    c.font = 'bold 22px "Segoe UI Symbol", "Microsoft YaHei"';
+  }
+  c.fillText(cardLabel(card), x + w / 2, y + h / 2);
+  if (isMainCard(card)) {
+    c.fillStyle = '#f1c40f';
+    c.font = '10px "Microsoft YaHei"';
+    c.textAlign = 'right'; c.textBaseline = 'top';
+    c.fillText('★', x + w - 6, y + 4);
+  }
+}
+
+// 牌背
+function drawCardBack(c, x, y, w, h) {
+  roundRectPath(c, x, y, w, h, 3);
+  c.fillStyle = '#9b59b6'; c.fill();
+  c.strokeStyle = '#bdc3c7'; c.lineWidth = 1; c.stroke();
+  c.fillStyle = 'rgba(255,255,255,.5)';
+  c.fillRect(x + 3, y + 3, w - 6, 4);
+}
+
+function hand(pid) { return gameData?.hands?.[String(pid)] || []; }
+
+function renderCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width || 1280, h = rect.height || 830;
+  const cx = w / 2, cy = h / 2;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0f7a44';
+  ctx.fillRect(0, 0, w, h);
+
+  if (!gameData) return;
+  const rr = gameData.round_record;
+
+  drawInfoPanel(w, h, cx, cy);
+  if (rr) drawBottomStrip(w, h);
+
+  if (['trump','bury','stir'].includes(gameData.state)) {
+    drawPhaseEvents(w, h, cx, cy);   // 亮主/反主牌面 + 埋底/炒底记录
+  }
+
+  // 手牌
+  drawHandRow(hand(0), h - 22, 26, 38, false, w);
+  drawHandRow(hand(2), 40, 24, 34, true, w);
+  drawSideFan(3, 26, cy, 28, 40);
+  drawSideFan(1, w - 26, cy, 28, 40);
+
+  if (['playing','settled'].includes(gameData.state)) {
+    drawCenter(w, h, cx, cy);
+  }
+  if (gameData.game_over) drawGameOver(w, h);
+}
+
+function drawInfoPanel(w, h, cx, cy) {
+  const rr = gameData.round_record;
+  let lines = [];
+  lines.push(`第 ${gameData.round} 局`);
+  if (rr) lines.push(`打 ${rr.level}`);
+  if (rr) lines.push(`主: ${rr.trump_suit_cn || '无主'}`);
+  lines.push(`庄家: 玩家${gameData.dealer_pid + 1}`);
+  lines.push(`队伍A: ${gameData.team_a_level}`);
+  lines.push(`队伍B: ${gameData.team_b_level}`);
+  const x = 10, y0 = 14;
+  lines.forEach((t, i) => drawText(ctx, t, x, y0 + i * 18, 'bold 12px "Microsoft YaHei"', '#ecf0f1', 'left'));
+  // 已收分
+  if (rr && gameData.state !== 'trump') {
+    drawText(ctx, `闲家已得 ${rr.attacker_score} 分`, x, y0 + lines.length * 18 + 2,
+      'bold 12px "Microsoft YaHei"', '#f39c12', 'left');
+  }
+}
+
+function drawBottomStrip(w, h) {
+  const rr = gameData.round_record;
+  if (!rr) return;
+  const bottom = gameData.bottom || [];
+  if (!bottom.length) return;
+  const cx = w / 2, cy = h / 2;                 // 底牌放桌布中心点
+  const cw = 28, ch = 42, gap = 3;
+  const total = bottom.length * (cw + gap) - gap;
+  const x0 = cx - total / 2;
+  const y = cy - ch / 2;
+  // 淡色衬底, 标明是中央底牌区
+  ctx.fillStyle = 'rgba(0,0,0,.18)';
+  roundRectPath(ctx, x0 - 8, y - 8, total + 16, ch + 14, 8);
+  ctx.fill();
+  bottom.forEach((card, i) => drawMiniCard(ctx, x0 + i * (cw + gap), y, card, {w: cw, h: ch}));
+  const score = bottom.reduce((s, c) => s + ({5: 5, 10: 10, K: 10}[c.rank] || 0), 0);
+  drawText(ctx, `底牌 ${score}分`, cx, y - 14, 'bold 11px "Microsoft YaHei"', '#f1c40f');
+}
+
+// 玩家出牌区中心位置 (0下/1右/2上/3左)
+function phasePos(pid, w, h, cx, cy) {
+  const xOff = Math.min(360, Math.max(240, w * 0.28));
+  const topY = Math.max(150, Math.min(210, h * 0.26));
+  const bottomY = Math.min(h - 120, Math.max(cy + 60, h * 0.58));
+  return {
+    0: [cx, bottomY],         // 下家(玩家1)
+    1: [cx + xOff, cy - 40],  // 右家(玩家2)
+    2: [cx, topY],            // 上家(玩家3)
+    3: [cx - xOff, cy - 40],  // 左家(玩家4)
+  }[pid];
+}
+
+// 阶段事件: 亮主/反主牌面 + 炒底资格牌 + 埋底/炒底记录 (仅 trump/bury/stir 阶段)
+function drawPhaseEvents(w, h, cx, cy) {
+  const rr = gameData.round_record;
+
+  // 1) 亮主/反主: 在对应玩家的出牌区展示级牌, 牌组正下方显示动作名
+  const cc = gameData.current_call;
+  if (cc && rr && rr.level) {
+    const pos = phasePos(cc.pid, w, h, cx, cy);
+    if (pos) {
+      const cw = 30, ch = 44, gap = 2;
+      const total = cc.count * (cw + gap) - gap;
+      const x0 = pos[0] - total / 2;
+      const card = {suit: cc.suit, rank: rr.level};   // 级牌
+      for (let i = 0; i < cc.count; i++) {
+        drawMiniCard(ctx, x0 + i * (cw + gap), pos[1] - ch / 2, card, {w: cw, h: ch, highlight: true});
+      }
+      drawText(ctx, cc.action, pos[0], pos[1] + ch / 2 + 16,
+        'bold 14px "Microsoft YaHei"', '#f1c40f');
+    }
+  }
+
+  // 2) 炒底资格牌: 在炒底者出牌区亮出炒牌 (大王/小王/级牌), 下方标注炒底牌型
+  const cs = gameData.current_stir;
+  if (cs && cs.qualify && cs.qualify.length) {
+    const pos = phasePos(cs.pid, w, h, cx, cy);
+    if (pos) {
+      const cw = 34, ch = 50, gap = 3;
+      const total = cs.qualify.length * (cw + gap) - gap;
+      const x0 = pos[0] - total / 2;
+      cs.qualify.forEach((card, i) => {
+        drawMiniCard(ctx, x0 + i * (cw + gap), pos[1] - ch / 2, card, {w: cw, h: ch, highlight: true});
+      });
+      drawText(ctx, `炒底·${cs.label}`, pos[0], pos[1] + ch / 2 + 16,
+        'bold 13px "Microsoft YaHei"', '#f39c12');
+    }
+  }
+
+  // 3) 埋底/炒底记录: 底牌组正下方, 埋底一行 + 每条炒底一行
+  const lines = [];
+  if (rr && typeof rr.bury_pid === 'number' && rr.buried_cards && rr.buried_cards.length) {
+    const cards = rr.buried_cards.map(cardLabel).join(' ');
+    lines.push(`📦 庄家(玩家${rr.bury_pid + 1}) 埋底: ${cards}`);
+  }
+  const revealed = gameData.stir_revealed || 0;
+  (rr.stir_events || []).slice(0, revealed).forEach(e => {
+    const taken = (e.taken || []).map(cardLabel).join(' ');
+    const disc = (e.discarded || []).map(cardLabel).join(' ');
+    lines.push(`🍳 玩家${e.pid + 1} ${e.label}炒底: 换入 ${taken} | 弃出 ${disc}`);
+  });
+  if (lines.length) {
+    const y0 = cy + 40;
+    ctx.font = '11px "Microsoft YaHei"';
+    const maxW = Math.max(...lines.map(t => ctx.measureText(t).width));
+    const padX = 10, padY = 6;
+    ctx.fillStyle = 'rgba(0,0,0,.45)';
+    roundRectPath(ctx, cx - maxW / 2 - padX, y0 - padY, maxW + padX * 2, lines.length * 18 + padY * 2, 8);
+    ctx.fill();
+    lines.forEach((t, i) => drawText(ctx, t, cx, y0 + i * 18, '11px "Microsoft YaHei"', '#e8d9a0'));
+  }
+}
+
+// 一行手牌 (自适应宽度)
+function drawHandRow(cards, y, baseW, baseH, isTop, w) {
+  if (!cards.length) return;
+  const gap = 2;
+  const avail = w - 60;
+  const cw = Math.min(baseW, Math.max(13, Math.floor(avail / cards.length) - gap));
+  const ch = Math.round(cw * 1.5);
+  if (!isTop) {
+    // 底部玩家手牌: 上移到画布内, 保证整张牌与下方标签都完整显示
+    const rect = canvas.getBoundingClientRect();
+    const h = rect.height || 830;
+    y = h - ch - 18;
+  }
+  const total = cards.length * (cw + gap) - gap;
+  const x0 = (w - total) / 2;
+  cards.forEach((card, i) => drawMiniCard(ctx, x0 + i * (cw + gap), y, card, {w: cw, h: ch}));
+  if (isTop) {
+    drawText(ctx, `玩家${3}${gameData.dealer_pid === 2 ? ' (庄)' : ''} (${cards.length})`,
+      w / 2, y - 8, 'bold 11px "Microsoft YaHei"', '#ecf0f1');
+  } else {
+    drawText(ctx, `玩家${1}${gameData.dealer_pid === 0 ? ' (庄)' : ''} (${cards.length})`,
+      w / 2, y + ch + 14, 'bold 11px "Microsoft YaHei"', '#ecf0f1');
+  }
+}
+
+// 左右两侧: 展示全部手牌(竖排扇形, 面朝中央)
+function drawSideFan(pid, x, cy, cw, ch) {
+  const cards = hand(pid);
+  const n = cards.length;
+  if (!n) {
+    drawText(ctx, `玩家${pid + 1}`, x, cy, 'bold 10px "Microsoft YaHei"', '#ecf0f1');
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const h = rect.height || 830;
+  const isLeft = pid === 3;
+  const yTop = 118;
+  const yBottom = Math.max(yTop + 80, h - 172);
+  const span = yBottom - yTop;
+  const step = Math.min(ch - 10, span / n);
+  const maxDeg = Math.min(46, 14 + n * 0.8);
+  const per = n > 1 ? maxDeg / (n - 1) : 0;
+  const y0 = yTop + (span - (n - 1) * step) / 2;
+  const topFont = `bold ${Math.max(6, Math.min(9, Math.round(step - 4)))}px "Microsoft YaHei"`;
+  for (let i = 0; i < n; i++) {
+    const ang = ((isLeft ? -maxDeg / 2 : maxDeg / 2) + (isLeft ? 1 : -1) * i * per) * Math.PI / 180;
+    const yy = y0 + i * step;
+    ctx.save();
+    ctx.translate(x, yy);
+    ctx.rotate(ang);
+    drawMiniCard(ctx, -cw / 2, -ch / 2, cards[i], {w: cw, h: ch, topLabel: true, topFont});
+    ctx.restore();
+  }
+  const dealer = gameData.dealer_pid === pid;
+  drawText(ctx, `玩家${pid + 1}${dealer ? ' (庄)' : ''} · ${n}张`,
+    x, yTop - 18, 'bold 10px "Microsoft YaHei"', '#ecf0f1');
+}
+
+// 出牌操作名 (毙牌/甩牌/甩牌失败等) 在牌组下方的小标签
+const ACTION_COLOR = {
+  'kill': '#e74c3c', 'kill_throw': '#e74c3c', 'over_kill': '#c0392b',
+  'throw': '#f1c40f', 'throw_fail': '#e67e22',
+};
+
+function drawActionTag(px, py, action, actionCn) {
+  ctx.font = 'bold 12px "Microsoft YaHei"';
+  const color = ACTION_COLOR[action] || '#ecf0f1';
+  const w = ctx.measureText(actionCn).width + 14;
+  ctx.fillStyle = 'rgba(0,0,0,.55)';
+  roundRectPath(ctx, px - w / 2, py - 10, w, 20, 5);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(actionCn, px, py);
+}
+
+function drawCenter(w, h, cx, cy) {
+  const t = gameData.current_trick;
+  const rr = gameData.round_record;
+  if (t) {
+    const xOff = Math.min(360, Math.max(240, w * 0.28));
+    const topY = Math.max(150, Math.min(210, h * 0.26));
+    const bottomY = Math.min(h - 120, Math.max(cy + 60, h * 0.58));
+    const positions = {
+      0: [cx, bottomY],        // 下家
+      1: [cx + xOff, cy - 40], // 右家
+      2: [cx, topY],           // 上家
+      3: [cx - xOff, cy - 40], // 左家
+    };
+    for (let pi = 0; pi < t.played.length; pi++) {
+      if (pi >= revealShown) break;          // 逐位亮牌: 只显示已出的玩家
+      const play = t.played[pi];
+      const cl = play.cards || [];
+      if (!cl.length) continue;
+      const [px, py] = positions[play.pid];
+      // 红框(本圈最大)只在 4 家都出完牌后才显示, 亮牌过程中不预先高亮胜家
+      const isWinner = revealShown >= t.played.length && t.winner === play.pid;
+      const perRow = 8;                       // 一行最多 8 张
+      const gap = 44;                         // 相邻牌仅重叠 12px, 尽量露出完整牌面
+      const rowH = 88;                        // 行距: 牌高 80 + 行间距 8
+      const rows = Math.ceil(cl.length / perRow);
+      const yBase = py - ((rows - 1) * rowH) / 2;   // 多行以锚点垂直居中
+      let lastRowY = py;
+      for (let r = 0; r < rows; r++) {
+        const slice = cl.slice(r * perRow, Math.min((r + 1) * perRow, cl.length));
+        const totalW = slice.length * gap + 56 - gap;
+        const startX = px - totalW / 2;
+        const y = yBase + r * rowH;
+        slice.forEach((card, j) => drawBigCard(ctx, startX + j * gap, y, card, {highlight: isWinner}));
+        if (r === rows - 1) lastRowY = y;
+      }
+      // 出牌操作名 (毙牌/甩牌/甩牌失败等) 显示在牌组下方
+      const cardBottom = lastRowY + 80;                 // 大牌高 80px, 牌组底边
+      if (play.action_cn) {
+        drawActionTag(px, cardBottom + 12, play.action, play.action_cn);   // 标签顶部留 2px 间隙, 不压牌
+      }
+      if (isWinner) {
+        const tagBottom = cardBottom + 22;              // 标签底边 (12 + 半高10)
+        drawText(ctx, `玩家${play.pid + 1}`, px,
+          (play.action_cn ? tagBottom + 12 : cardBottom + 12),
+          'bold 11px "Microsoft YaHei"', '#f39c12');
+      }
+    }
+  }
+  if (gameData.state === 'settled' && rr && trickRevealed()) drawSettlement(w, h, cx, cy);
+}
+
+function drawSettlement(w, h, cx, cy) {
+  const rr = gameData.round_record;
+  const lines = [];
+  lines.push(`闲家得分: ${rr.attacker_score}`);
+  if (rr.koudi) lines.push(`抠底 ${rr.koudi_pattern} 底分${rr.bottom_score} × ${rr.koudi_multiplier}`);
+  if (rr.dealer_up > 0) lines.push(`庄家方 +${rr.dealer_up}级`);
+  if (rr.attacker_up > 0) lines.push(`闲家方 +${rr.attacker_up}级`);
+  if (rr.side_switch) lines.push(`庄权交接 → 新庄家玩家${gameData.dealer_pid + 1}`);
+  lines.push(rr.result);
+  const lineH = 25;
+  const y0 = Math.max(92, cy - 175);   // 避开中央底牌区, 结案文字显示在底牌上方
+  let maxW = 0;
+  lines.forEach((t, i) => {
+    ctx.font = `bold ${i === lines.length - 1 ? 15 : 12}px "Microsoft YaHei"`;
+    maxW = Math.max(maxW, ctx.measureText(t).width);
+  });
+  // 半透明深色衬底, 即使与最后一圈牌重叠也清晰可读
+  const padX = 18, padY = 12;
+  ctx.fillStyle = 'rgba(0,0,0,.55)';
+  roundRectPath(ctx, cx - maxW / 2 - padX, y0 - padY,
+    maxW + padX * 2, lines.length * lineH + padY * 2, 10);
+  ctx.fill();
+  lines.forEach((t, i) => drawText(ctx, t, cx, y0 + i * lineH,
+    `bold ${i === lines.length - 1 ? 15 : 12}px "Microsoft YaHei"`,
+    i === lines.length - 1 ? '#f1c40f' : '#f39c12'));
+}
+
+function drawGameOver(w, h) {
+  ctx.fillStyle = 'rgba(0,0,0,.6)';
+  ctx.fillRect(0, 0, w, h);
+  drawText(ctx, `🏆 ${gameData.winner || '游戏结束'}`, w / 2, h / 2 - 20,
+    'bold 32px "Microsoft YaHei"', '#f1c40f');
+  drawText(ctx, `共 ${gameData.round} 局 | 队伍A:${gameData.team_a_level} 队伍B:${gameData.team_b_level}`,
+    w / 2, h / 2 + 30, '14px "Microsoft YaHei"', '#ecf0f1');
+  drawText(ctx, '点击「重置」重新开始', w / 2, h / 2 + 60, '12px "Microsoft YaHei"', '#bdc3c7');
+}
+
+function syncStatus() {
+  const text = gameData?.status || '就绪 | 点击「开始」启动游戏';
+  document.getElementById('statusTop').textContent = text;
+  document.getElementById('statusBar').textContent = text;
+}
+
+function render() {
+  syncStatus();
+  renderCanvas();
+}
+
+function trickRevealed() {
+  const t = gameData?.current_trick;
+  if (!t) return true;
+  return revealNum === t.num && revealShown >= t.played.length;
+}
+
+// 一圈出牌: 玩家逐个亮牌(一个一个出)。第一家立即亮出, 后续按延迟逐家出。
+function animateTrick(done) {
+  const t = gameData?.current_trick;
+  if (!t) { done(); return; }
+  if (revealNum !== t.num) {
+    revealNum = t.num;
+    revealShown = 0;
+  }
+  revealShown = 1;                 // 第一家立刻亮, 点击后不用等
+  renderCanvas();
+  if (revealShown >= t.played.length) { done(); return; }
+  const step = () => {
+    revealShown++;
+    renderCanvas();
+    if (revealShown >= t.played.length) done();
+    else animTimer = setTimeout(step, speed);
+  };
+  animTimer = setTimeout(step, speed);
+}
+
+async function advance() {
+  if (!sessionId || animating) return;
+  animating = true;
+  closeModal();
+  if (gameData && lastRound !== gameData.round) { revealNum = -1; revealShown = 0; }
+  gameData = await apiCall('api/step', {session_id: sessionId});
+  if (gameData.game_over) { stopAuto(); render(); animating = false; return; }
+  lastRound = gameData.round;
+  if (!gameData.current_trick) {
+    revealNum = -1; revealShown = 0;
+    render();
+    animating = false;
+    onTrickDone();
+    return;
+  }
+  render();
+  animateTrick(() => { animating = false; onTrickDone(); });
+}
+
+function onTrickDone() {
+  if (gameData?.state === 'settled' && !autoRunning) showSettlementModal();
+  if (autoRunning && !gameData?.game_over) autoTimer = setTimeout(advance, speed);
+}
+
+async function doStep() {
+  if (!sessionId || autoRunning || animating || gameData?.game_over) return;
+  await advance();
+}
+
+function showSettlementModal() {
+  const rr = gameData.round_record;
+  if (!rr) return;
+  modalShownFor = gameData.round;
+  document.getElementById('modalTitle').textContent = `第 ${rr.rnd} 局结算`;
+  document.getElementById('modalResult').textContent = rr.result || '';
+  const rows = [
+    ['本局级牌', `打 ${rr.level}`],
+    ['主花色', `${rr.trump_suit_cn || '无主'}`],
+    ['庄家方', `玩家${rr.dt[0] + 1}、玩家${rr.dt[1] + 1}`],
+    ['闲家方', `玩家${rr.at[0] + 1}、玩家${rr.at[1] + 1}`],
+    ['闲家得分', `${rr.attacker_score} 分`],
+    ['抠底', rr.koudi ? `${rr.bottom_score} 分 × ${rr.koudi_multiplier} 倍` : '无'],
+    ['庄家方升级', `+${rr.dealer_up}`],
+    ['闲家方升级', `+${rr.attacker_up}`],
+    ['庄权交接', rr.side_switch ? `新庄家玩家${gameData.dealer_pid + 1}` : '庄家方守庄'],
+    ['队伍等级', `队伍A:${rr.team_a_level_after}  队伍B:${rr.team_b_level_after}`],
+    ['圈数', `${rr.tricks_count} 圈`],
+  ];
+  document.getElementById('modalTable').innerHTML =
+    '<tr><th>项目</th><th>值</th></tr>' + rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+  document.getElementById('settleModal').classList.remove('hidden');
+}
+
+function closeModal() { document.getElementById('settleModal').classList.add('hidden'); }
+
+function setButtons(running) {
+  document.getElementById('btnStart').disabled = running;
+  document.getElementById('btnStep').disabled = !running || autoRunning;
+  document.getElementById('btnAuto').disabled = !running;
+}
+
+async function apiCall(url, data) {
+  const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data || {})});
+  return res.json();
+}
+
+async function newGame() {
+  const body = {};
+  const seed = document.getElementById('seedInput').value.trim();
+  if (seed) body.seed = parseInt(seed, 10);
+  const resp = await apiCall('api/new', body);
+  sessionId = resp.session_id;
+  gameData = resp;
+  modalShownFor = null;
+  revealNum = -1; revealShown = 0; animating = false; lastRound = gameData.round;
+  closeModal();
+  setButtons(true);
+  render();
+}
+
+function startAuto() {
+  autoRunning = true;
+  closeModal();
+  const btn = document.getElementById('btnAuto');
+  btn.textContent = '⏸ 暂停';
+  btn.classList.add('running');
+  setButtons(true);
+  advance();
+}
+
+function stopAuto() {
+  autoRunning = false;
+  if (autoTimer) clearTimeout(autoTimer);
+  autoTimer = null;
+  if (animTimer) clearTimeout(animTimer);
+  animTimer = null;
+  animating = false;
+  if (gameData?.current_trick && !trickRevealed()) {
+    revealShown = gameData.current_trick.played.length;   // 暂停时把当前圈补完
+    renderCanvas();
+  }
+  const btn = document.getElementById('btnAuto');
+  btn.textContent = '▶▶ 自动';
+  btn.classList.remove('running');
+  setButtons(!!sessionId && !gameData?.game_over);
+}
+
+function toggleAuto() { autoRunning ? stopAuto() : startAuto(); }
+
+async function resetGame() {
+  stopAuto();
+  if (sessionId) await apiCall('api/reset', {session_id: sessionId});
+  sessionId = null;
+  gameData = null;
+  modalShownFor = null;
+  revealNum = -1; revealShown = 0; animating = false; lastRound = -1;
+  closeModal();
+  setButtons(false);
+  syncStatus();
+  renderCanvas();
+}
+
+document.getElementById('btnStart').addEventListener('click', newGame);
+document.getElementById('btnStep').addEventListener('click', doStep);
+document.getElementById('btnAuto').addEventListener('click', toggleAuto);
+document.getElementById('btnReset').addEventListener('click', resetGame);
+document.getElementById('modalContinue').addEventListener('click', doStep);
+document.getElementById('speedSel').addEventListener('change', e => { speed = parseInt(e.target.value, 10) || 400; });
+canvas.addEventListener('click', () => {
+  if (!sessionId || gameData?.game_over) return;
+  autoRunning ? stopAuto() : doStep();
+});
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); autoRunning ? stopAuto() : doStep(); }
+  if (e.code === 'KeyN') { e.preventDefault(); newGame(); }
+});
+
+resizeCanvas();
+</script>
+</body>
+</html>
