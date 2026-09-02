@@ -239,9 +239,10 @@ function renderCanvas() {
 
   drawInfoPanel(w, h, cx, cy);
   if (rr) drawBottomStrip(w, h);
+  drawBottomInfo(w, h, cx, cy);   // 底牌下方: 埋底/炒底信息 (始终显示)
 
   if (['trump','bury','stir'].includes(gameData.state)) {
-    drawPhaseEvents(w, h, cx, cy);   // 亮主/反主牌面 + 埋底/炒底记录
+    drawPhaseEvents(w, h, cx, cy);   // 亮主/反主牌面 + 炒底资格牌
   }
 
   // 手牌
@@ -293,11 +294,52 @@ function drawBottomStrip(w, h) {
   drawText(ctx, `底牌 ${score}分`, cx, y - 14, 'bold 11px "Microsoft YaHei"', '#f1c40f');
 }
 
+// 底牌下方: 埋底/炒底信息。阶段中逐步展示(跟随炒底进度), 游戏开始(playing/settled)后只保留最后一条。
+// 信息框以 cx 水平居中, 与底牌背景框同一轴线对齐。
+function drawBottomInfo(w, h, cx, cy) {
+  const rr = gameData.round_record;
+  if (!rr) return;
+  const events = rr.stir_events || [];
+  const buryLine = () => {
+    if (typeof rr.bury_pid !== 'number' || !rr.buried_cards || !rr.buried_cards.length) return null;
+    const cards = rr.buried_cards.map(cardLabel).join(' ');
+    return `📦 庄家(玩家${rr.bury_pid + 1}) 埋底: ${cards}`;
+  };
+  const stirLine = e => {
+    const taken = (e.taken || []).map(cardLabel).join(' ');
+    const disc = (e.discarded || []).map(cardLabel).join(' ');
+    return `🍳 玩家${e.pid + 1} ${e.label}炒底: 换入 ${taken} | 弃出 ${disc}`;
+  };
+  let lines = [];
+  if (gameData.state === 'playing' || gameData.state === 'settled') {
+    // 出牌开始后只保留最后一条: 取最后一条炒底; 无炒底则保留埋底
+    if (events.length) lines.push(stirLine(events[events.length - 1]));
+    else lines.push(buryLine());
+  } else {
+    const b = buryLine();
+    if (b) lines.push(b);
+    events.slice(0, gameData.stir_revealed || 0).forEach(e => lines.push(stirLine(e)));
+  }
+  lines = lines.filter(Boolean);
+  if (!lines.length) return;
+  const y0 = cy + 40;
+  ctx.font = '11px "Microsoft YaHei"';
+  const maxW = Math.max(...lines.map(t => ctx.measureText(t).width));
+  const lineH = 18, padX = 10, padY = 6;
+  ctx.fillStyle = 'rgba(0,0,0,.45)';
+  // 框以文本块中心对齐: 文本行中心在 y0+i*lineH, 块中心 = y0 + (n-1)*lineH/2;
+  // 框顶 = 块中心 - 框高/2 = y0 - lineH/2 - padY (之前漏了 lineH/2 导致框整体下移 9px)
+  const boxY = y0 - lineH / 2 - padY;
+  roundRectPath(ctx, cx - maxW / 2 - padX, boxY, maxW + padX * 2, lines.length * lineH + padY * 2, 8);
+  ctx.fill();
+  lines.forEach((t, i) => drawText(ctx, t, cx, y0 + i * lineH, '11px "Microsoft YaHei"', '#e8d9a0'));
+}
+
 // 玩家出牌区中心位置 (0下/1右/2上/3左)
 function phasePos(pid, w, h, cx, cy) {
   const xOff = Math.min(360, Math.max(240, w * 0.28));
   const topY = Math.max(150, Math.min(210, h * 0.26));
-  const bottomY = Math.min(h - 120, Math.max(cy + 60, h * 0.58));
+  const bottomY = Math.min(h - 110, Math.max(cy + 100, h * 0.66));
   return {
     0: [cx, bottomY],         // 下家(玩家1)
     1: [cx + xOff, cy - 40],  // 右家(玩家2)
@@ -342,29 +384,6 @@ function drawPhaseEvents(w, h, cx, cy) {
         'bold 13px "Microsoft YaHei"', '#f39c12');
     }
   }
-
-  // 3) 埋底/炒底记录: 底牌组正下方, 埋底一行 + 每条炒底一行
-  const lines = [];
-  if (rr && typeof rr.bury_pid === 'number' && rr.buried_cards && rr.buried_cards.length) {
-    const cards = rr.buried_cards.map(cardLabel).join(' ');
-    lines.push(`📦 庄家(玩家${rr.bury_pid + 1}) 埋底: ${cards}`);
-  }
-  const revealed = gameData.stir_revealed || 0;
-  (rr.stir_events || []).slice(0, revealed).forEach(e => {
-    const taken = (e.taken || []).map(cardLabel).join(' ');
-    const disc = (e.discarded || []).map(cardLabel).join(' ');
-    lines.push(`🍳 玩家${e.pid + 1} ${e.label}炒底: 换入 ${taken} | 弃出 ${disc}`);
-  });
-  if (lines.length) {
-    const y0 = cy + 40;
-    ctx.font = '11px "Microsoft YaHei"';
-    const maxW = Math.max(...lines.map(t => ctx.measureText(t).width));
-    const padX = 10, padY = 6;
-    ctx.fillStyle = 'rgba(0,0,0,.45)';
-    roundRectPath(ctx, cx - maxW / 2 - padX, y0 - padY, maxW + padX * 2, lines.length * 18 + padY * 2, 8);
-    ctx.fill();
-    lines.forEach((t, i) => drawText(ctx, t, cx, y0 + i * 18, '11px "Microsoft YaHei"', '#e8d9a0'));
-  }
 }
 
 // 一行手牌 (自适应宽度)
@@ -392,7 +411,7 @@ function drawHandRow(cards, y, baseW, baseH, isTop, w) {
   }
 }
 
-// 左右两侧: 展示全部手牌(竖排扇形, 面朝中央)
+// 左右两侧: 展示全部手牌(正摆放竖排, 一列摆不下自动分两列)
 function drawSideFan(pid, x, cy, cw, ch) {
   const cards = hand(pid);
   const n = cards.length;
@@ -406,29 +425,34 @@ function drawSideFan(pid, x, cy, cw, ch) {
   const yTop = 118;
   const yBottom = Math.max(yTop + 80, h - 172);
   const span = yBottom - yTop;
-  const step = Math.min(ch - 10, span / n);
-  const maxDeg = Math.min(46, 14 + n * 0.8);
-  const per = n > 1 ? maxDeg / (n - 1) : 0;
-  const y0 = yTop + (span - (n - 1) * step) / 2;
-  const topFont = `bold ${Math.max(6, Math.min(9, Math.round(step - 4)))}px "Microsoft YaHei"`;
+  const baseStep = 18;                          // 相邻牌上下重叠, 每张露出 18px
+  const maxPerCol = Math.floor(span / baseStep) || 1;   // 一列最多张数
+  const cols = n > maxPerCol ? 2 : 1;
+  const perCol = Math.ceil(n / cols);
+  const step = Math.min(baseStep, span / perCol);       // 放不下时压缩重叠
+  const gap = 2;
+  const y0 = yTop + (span - (perCol - 1) * step) / 2;   // 垂直居中
+  // 左侧玩家列靠左排, 右侧玩家列靠右排
+  const x0 = isLeft ? x : x - cols * cw - (cols - 1) * gap;
+  const topFont = 'bold 9px "Microsoft YaHei"';
   for (let i = 0; i < n; i++) {
-    const ang = ((isLeft ? -maxDeg / 2 : maxDeg / 2) + (isLeft ? 1 : -1) * i * per) * Math.PI / 180;
-    const yy = y0 + i * step;
-    ctx.save();
-    ctx.translate(x, yy);
-    ctx.rotate(ang);
-    drawMiniCard(ctx, -cw / 2, -ch / 2, cards[i], {w: cw, h: ch, topLabel: true, topFont});
-    ctx.restore();
+    const col = Math.floor(i / perCol);
+    const idx = i % perCol;
+    const xx = x0 + col * (cw + gap);
+    const yy = y0 + idx * step;
+    drawMiniCard(ctx, xx, yy, cards[i], {w: cw, h: ch, topLabel: true, topFont});
   }
+  const blockW = cols * cw + (cols - 1) * gap;
+  const titleX = isLeft ? x + blockW / 2 : x - blockW / 2;
   const dealer = gameData.dealer_pid === pid;
   drawText(ctx, `玩家${pid + 1}${dealer ? ' (庄)' : ''} · ${n}张`,
-    x, yTop - 18, 'bold 10px "Microsoft YaHei"', '#ecf0f1');
+    titleX, yTop - 18, 'bold 10px "Microsoft YaHei"', '#ecf0f1');
 }
 
-// 出牌操作名 (毙牌/甩牌/甩牌失败等) 在牌组下方的小标签
+// 出牌操作名 (毙牌/盖毙/甩牌/甩牌失败等) 在牌组下方的小标签
 const ACTION_COLOR = {
-  'kill': '#e74c3c', 'kill_throw': '#e74c3c', 'over_kill': '#c0392b',
-  'throw': '#f1c40f', 'throw_fail': '#e67e22',
+  'kill': '#f1c40f', 'kill_throw': '#f1c40f', 'over_kill': '#e74c3c',   // 毙牌家族黄色, 盖毙红色
+  'throw': '#00bcd4', 'throw_fail': '#e67e22',
 };
 
 function drawActionTag(px, py, action, actionCn) {
@@ -450,7 +474,7 @@ function drawCenter(w, h, cx, cy) {
   if (t) {
     const xOff = Math.min(360, Math.max(240, w * 0.28));
     const topY = Math.max(150, Math.min(210, h * 0.26));
-    const bottomY = Math.min(h - 120, Math.max(cy + 60, h * 0.58));
+    const bottomY = Math.min(h - 110, Math.max(cy + 100, h * 0.66));
     const positions = {
       0: [cx, bottomY],        // 下家
       1: [cx + xOff, cy - 40], // 右家
