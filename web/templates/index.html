@@ -443,7 +443,8 @@ function drawBottomInfo(w, h, cx, cy) {
   const stirLine = e => {
     const taken = (e.taken || []).map(cardLabel).join(' ');
     const disc = (e.discarded || []).map(cardLabel).join(' ');
-    return `🍳 玩家${e.pid + 1} ${e.label}炒底: 换入 ${taken} | 弃出 ${disc}`;
+    const act = e.action === '反炒' ? '反炒' : '炒底';
+    return `🍳 玩家${e.pid + 1} ${e.label}${act}: 换入 ${taken} | 弃出 ${disc}`;
   };
   let lines = [];
   if (gameData.state === 'playing' || gameData.state === 'settled') {
@@ -515,7 +516,8 @@ function drawPhaseEvents(w, h, cx, cy) {
       cs.qualify.forEach((card, i) => {
         drawMiniCard(ctx, x0 + i * (cw + gap), pos[1] - ch / 2, card, {w: cw, h: ch, highlight: true});
       });
-      drawText(ctx, `炒底·${cs.label}`, pos[0], pos[1] + ch / 2 + 16,
+      const act = cs.action === '反炒' ? '反炒' : '炒底';
+      drawText(ctx, `${act}·${cs.label}`, pos[0], pos[1] + ch / 2 + 16,
         'bold 13px "Microsoft YaHei"', '#f39c12');
     }
   }
@@ -1026,8 +1028,9 @@ function renderLogBody(rnd, evs) {
     } else if (e.type === 'stir') {
       if (e.items && e.items.length) {
         e.items.forEach((it, ix) => {
-          html.push(`<div class="lsect">炒底${e.items.length > 1 ? ` ${ix + 1}` : ''} · `
-                  + `玩家${it.pid + 1} 以 <span class="ln p-s">${it.label}</span> 炒底</div>`);
+          const act = it.action === '反炒' ? '反炒' : '炒底';
+          html.push(`<div class="lsect">${act}${e.items.length > 1 ? ` ${ix + 1}` : ''} · `
+                  + `玩家${it.pid + 1} 以 <span class="ln p-s">${it.label}</span> ${act}</div>`);
           html.push(`<div class="ln"><span class="k">换入</span><div class="pcards">${lpChips(it.taken)}</div></div>`);
           html.push(`<div class="ln"><span class="k">弃出</span><div class="pcards">${lpChips(it.discarded)}</div></div>`);
         });

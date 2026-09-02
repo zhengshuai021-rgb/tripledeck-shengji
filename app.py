@@ -223,7 +223,7 @@ class WebSession:
         self.engine_state = 'stir'
 
     def _do_stir(self):
-        """炒底: 一次点击只展示一条炒底记录。全部展示完后下一次点击开始出牌。"""
+        """炒底/反炒: 一次点击只展示一条炒底/反炒记录。全部展示完后下一次点击开始出牌。"""
         rec = self.rec
         if not self._stir_computed:
             events, final_bottom = determine_stir(self.hands, rec.level, rec.dealer_pid,
@@ -233,14 +233,15 @@ class WebSession:
             rec.bottom_score = sum(SCORE_VALUES.get(c.rank, 0) for c in final_bottom)
             self._stir_computed = True
             for e in events:
-                rec.log(f"【炒底】玩{e['pid']+1} 以{e['label']}炒底: "
+                act = e.get('action', '炒底')
+                rec.log(f"【{act}】玩{e['pid']+1} 以{e['label']}{act}: "
                         f"换入 {cards_str(e['taken'])} | 弃出 {cards_str(e['discarded'])}")
             if events:
                 rec.log(f"炒底后底牌: {cards_str(final_bottom)} (底分={rec.bottom_score})")
             else:
                 rec.log("【炒底】无人炒底")
             rec.events.append({'type': 'stir', 'items': [
-                {'pid': e['pid'], 'label': e['label'],
+                {'pid': e['pid'], 'label': e['label'], 'action': e.get('action', '炒底'),
                  'taken': self._cards_to_dicts(e['taken']),
                  'discarded': self._cards_to_dicts(e['discarded'])} for e in events],
                 'final_score': rec.bottom_score})
@@ -255,7 +256,8 @@ class WebSession:
             e = rec.stir_events[self._stir_show_idx]
             self._stir_show_idx += 1
             self.current_stir = e
-            self._set_status(f"🍳 炒底: 玩家{e['pid'] + 1} 以{e['label']}炒底, "
+            act = e.get('action', '炒底')
+            self._set_status(f"🍳 {act}: 玩家{e['pid'] + 1} 以{e['label']}{act}, "
                              f"换入 {cards_str(e['taken'])} | 弃出 {cards_str(e['discarded'])}")
             return
         # 所有炒底已展示 → 重建 bots (炒底会换手牌) 并开始出牌
@@ -446,6 +448,7 @@ class WebSession:
             cs = self.current_stir
             data['current_stir'] = {
                 'pid': cs['pid'], 'count': cs['count'], 'label': cs['label'],
+                'action': cs.get('action', '炒底'),
                 'qualify': self._cards_to_dicts(cs['qualify']),
                 'taken': self._cards_to_dicts(cs['taken']),
                 'discarded': self._cards_to_dicts(cs['discarded']),
@@ -467,6 +470,7 @@ class WebSession:
                                   'count': c['count'], 'suit': c['suit']}
                                  for c in rec.call_history],
                 'stir_events': [{'pid': e['pid'], 'count': e['count'], 'label': e['label'],
+                                 'action': e.get('action', '炒底'),
                                  'taken': self._cards_to_dicts(e['taken']),
                                  'discarded': self._cards_to_dicts(e['discarded'])}
                                 for e in rec.stir_events],

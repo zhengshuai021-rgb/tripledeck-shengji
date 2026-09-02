@@ -3,14 +3,15 @@
 """三副牌升级 · 游戏引擎 v1.0
 
 三副牌(162张), 4人游戏, 每人39张, 底牌6张。
-对局流程: 发牌 → 亮主/反主(无人叫主则打无主) → 庄家埋底(底分≤80) → 闲家炒底 → 出牌 → 结算升级(过A获胜)
+对局流程: 发牌 → 亮主/反主(无人叫主则打无主) → 庄家埋底(底分≤80) → 四人炒底/反炒(逆时针多轮竞价) → 出牌 → 结算升级(过A获胜)
 
 规则来源: 2026.8.31-三副牌升级.md / 三副牌升级游戏规则.md
 
 v1.0 说明:
   - 全自动对局(4个AI), 配合 Web 端逐步/自动播放
   - 已实现: 亮主/反主(级牌叫主, 张数多的反张数少的, 3反2/2反1, 同数量先叫为大, 反主须换花色)、
-    庄家埋底(底分≤80拦截)、闲家炒底(2张炒1张/3张炒2张, 炒牌仅作资格, 手牌39/底牌6不变)、
+    庄家埋底(底分≤80拦截)、四人炒底/反炒(2张炒1张/3张炒2张, 炒牌仅作资格, 手牌39/底牌6不变,
+        逆时针多轮竞价, 底牌最后经手者不能紧接着自己再动, 庄家可反炒闲家动过的底)、
     2常主、单张/对子/拖拉机/刻子/推土机、主牌杀、垫牌、分牌计分、抠底加倍、升级表
   - 暂缓(后续版本): 甩牌、主2/副2 及 主2/副级牌 的特殊拖拉机衔接按链序实现
 """
@@ -821,42 +822,58 @@ def stir_combos(hand, level):
 
 
 def determine_stir(hands, level, dealer_pid, bottom, trump_suit):
-    """炒底: 埋底后、出牌前, 仅闲家可炒, 按逆时针轮流。
-    炒牌仅作资格(保留手中): 2张炒牌换入底牌1张、3张换入2张 —— 从底牌换入 N=张数-1 张,
-    再从手牌弃出 N 张放回底牌, 手牌保持39张、底牌保持6张。
-    后炒者须数量更高或同数量优先级更高才能取代当前炒底。
-    AI 决策: 能炒就炒(持有合格炒牌即炒, 不看底牌是否有分)。
+    """炒底/反炒: 埋底后、出牌前, 四人按逆时针多轮竞价(庄家对家同伴也参与)。
+    庄家埋底后即为"底牌最后经手者", 从庄家下家起逆时针轮询, 直到一整圈无人炒为止:
+      - 每人轮到时以手里当前最强合格炒牌(大王/小王/同花色级牌 ×2/×3)出价;
+      - 出价须严格压过当前炒底(数量更高或同数量种类更高)才能取代;
+      - 底牌最后经手者轮到时不行动 —— 不能"自己刚埋/刚换的底紧接着自己再炒",
+        须别人先动过底牌后才能回来反炒(庄家也能反炒闲家动过的底)。
+    炒牌仅作资格(保留手中): 2张换入底牌1张、3张换入2张 —— 从底牌换入最好 N=张数-1 张,
+    再从手牌弃出最弱 N 张放回底牌, 手牌39/底牌6守恒; 换入的牌可能凑成更大炒牌,
+    故被顶掉的人下一圈可用升级后的组合再反炒。
+    AI 决策: 能炒就炒(持有可压过当前炒底的合格炒牌即炒, 不看底牌是否有分)。
     返回 (events, final_bottom)。
-    events: [{pid, count, label, taken, discarded}]
+    events: [{pid, count, label, action, taken, discarded}]
     """
     events = []
     bottom_list = list(bottom)
     current_prio = -1
-    for pid in ((dealer_pid + 1) % 4, (dealer_pid + 3) % 4):   # 逆时针: 两个闲家
-        combos = stir_combos(hands[pid], level)
-        if not combos:
-            continue
-        prio, combo, label = combos[0]                         # 自己最强组合
-        if prio <= current_prio:
-            continue                                           # 压不过当前炒底
-        n = len(combo) - 1                                     # 2张炒1张 / 3张炒2张
-        # 从底牌换入最好的 n 张 (分牌优先)
-        bottom_list.sort(key=lambda c: (int(c.rank not in SCORE_RANKS),
-                                        -cp(c, level, trump_suit)))
-        taken = bottom_list[:n]
-        rest = bottom_list[n:]
-        # 从手牌弃出最弱 n 张放回底牌 (按对象身份移除, 避免误删同值重牌)
-        hand = sorted(hands[pid], key=lambda c: (int(c.rank in SCORE_RANKS),
-                                                 cp(c, level, trump_suit)))
-        discarded = hand[:n]
-        discard_ids = {id(c) for c in discarded}
-        hands[pid] = [c for c in hands[pid] if id(c) not in discard_ids] + taken
-        bottom_list = rest + discarded
-        current_prio = prio
-        events.append({'pid': pid, 'count': len(combo), 'label': label,
-                       'qualify': list(combo),          # 获取炒底资格的炒牌(亮出来)
-                       'taken': taken, 'discarded': discarded,
-                       'bottom_after': list(bottom_list)})
+    owner = dealer_pid                                   # 底牌最后经手者(庄家刚埋底)
+    ring = [(dealer_pid + k) % 4 for k in range(1, 5)]   # 逆时针: 闲家1 → 同伴 → 闲家2 → 庄家
+    while True:
+        any_stir = False
+        for pid in ring:
+            if pid == owner:                             # 自己刚埋/刚换的底不能自己紧接着再动
+                continue
+            combos = stir_combos(hands[pid], level)
+            if not combos:
+                continue
+            prio, combo, label = combos[0]               # 自己最强组合
+            if prio <= current_prio:
+                continue                                 # 须严格压过当前炒底
+            n = len(combo) - 1                           # 2张炒1张 / 3张炒2张
+            # 从底牌换入最好的 n 张 (分牌优先)
+            bottom_list.sort(key=lambda c: (int(c.rank not in SCORE_RANKS),
+                                            -cp(c, level, trump_suit)))
+            taken = bottom_list[:n]
+            rest = bottom_list[n:]
+            # 从手牌弃出最弱 n 张放回底牌 (按对象身份移除, 避免误删同值重牌)
+            hand = sorted(hands[pid], key=lambda c: (int(c.rank in SCORE_RANKS),
+                                                     cp(c, level, trump_suit)))
+            discarded = hand[:n]
+            discard_ids = {id(c) for c in discarded}
+            hands[pid] = [c for c in hands[pid] if id(c) not in discard_ids] + taken
+            bottom_list = rest + discarded
+            current_prio = prio
+            owner = pid
+            any_stir = True
+            events.append({'pid': pid, 'count': len(combo), 'label': label,
+                           'qualify': list(combo),       # 获取炒底资格的炒牌(亮出来)
+                           'action': '反炒' if events else '炒底',
+                           'taken': taken, 'discarded': discarded,
+                           'bottom_after': list(bottom_list)})
+        if not any_stir:
+            break
     return events, bottom_list
 
 
@@ -1033,13 +1050,14 @@ class Game:
         bs = sum(SCORE_VALUES.get(c.rank, 0) for c in rec.bottom)
         rec.log(f"【埋底】庄家埋: {cards_str(buried)} (底分={bs})")
 
-        # 闲家炒底
+        # 四人炒底/反炒 (逆时针多轮竞价)
         stir_events, final_bottom = determine_stir(hands, level, dealer, list(rec.bottom), ts)
         rec.stir_events = stir_events
         rec.bottom = final_bottom
         rec.bottom_score = sum(SCORE_VALUES.get(c.rank, 0) for c in final_bottom)
         for e in stir_events:
-            rec.log(f"【炒底】玩{e['pid']+1} 以{e['label']}炒底: "
+            act = e.get('action', '炒底')
+            rec.log(f"【{act}】玩{e['pid']+1} 以{e['label']}{act}: "
                     f"换入 {cards_str(e['taken'])} | 弃出 {cards_str(e['discarded'])}")
         if stir_events:
             rec.log(f"炒底后底牌: {cards_str(rec.bottom)} (底分={rec.bottom_score})")
