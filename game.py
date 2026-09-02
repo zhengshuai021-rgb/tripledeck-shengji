@@ -209,6 +209,74 @@ def _throw_has_bigger(cards, other_hands, level, trump_suit):
     return False
 
 
+def _throw_blocks(cards, level, trump_suit):
+    """解析一次多牌型出牌(甩牌/毙甩牌)的结构块, 用于毙甩牌/盖毙的结构对应判定。
+    返回 (blocks, sig):
+      blocks: [(n_groups, per_group, cards), ...] 按强度降序排列
+              '段'(n_groups>=2, per_group>=2, 拖拉机/推土机) > 刻子 > 对子 > 单张
+      sig:    结构签名 = 按强度排序后的 (n_groups, per_group) 元组
+    连续段判定沿用 _adjacent (2常主/级牌并列), 段内每组均>=3张按推土机取3, 否则取2。
+    """
+    g = defaultdict(list)
+    for c in cards:
+        g[(c.suit, c.rank)].append(c)
+    items = sorted(g.items(), key=lambda kv: chain_idx(kv[1][0], level, trump_suit))
+    n = len(items)
+    used = [False] * n
+    blocks = []
+
+    # 1) 连续段: 相邻(chain_idx)且每组≥2张 (段内组标记 used, 其余留阶段2)
+    for i in range(n):
+        if used[i]:
+            continue
+        if len(items[i][1]) < 2:
+            continue                 # 单张组不成段, 留阶段2
+        seg = [i]
+        j = i + 1
+        while j < n:
+            if len(items[j][1]) < 2:
+                break
+            pc = items[seg[-1]][1][0]
+            cc = items[j][1][0]
+            if not _adjacent(chain_idx(pc, level, trump_suit),
+                             chain_idx(cc, level, trump_suit)):
+                break
+            seg.append(j)
+            j += 1
+        if len(seg) >= 2:
+            per = 3 if all(len(items[z][1]) >= 3 for z in seg) else 2
+            blk = []
+            for z in seg:
+                blk.extend(items[z][1][:per])
+                used[z] = True
+            blocks.append((len(seg), per, blk))
+            # 段内 3 张组取 2 张进段, 剩余 1 张归入单张
+            for z in seg:
+                if len(items[z][1]) > per:
+                    blocks.append((1, 1, items[z][1][per:]))
+
+    # 2) 剩余单组: 刻子/对子/单张
+    for i in range(n):
+        if used[i]:
+            continue
+        vv = items[i][1]
+        if len(vv) >= 3:
+            blocks.append((1, 3, vv[:3]))
+        elif len(vv) == 2:
+            blocks.append((1, 2, vv[:2]))
+        else:
+            blocks.append((1, 1, vv[:1]))
+
+    def _bk(b):
+        n_g, per = b[0], b[1]
+        if n_g >= 2 and per >= 2:
+            return (0, -per, -n_g)        # 段优先, 段内每组张数/组数多者更强
+        return (1, -per, -n_g)            # 刻子(3) > 对子(2) > 单张(1)
+    blocks.sort(key=_bk)
+    sig = tuple((b[0], b[1]) for b in blocks)
+    return blocks, sig
+
+
 def label_play(cards, lead_cards, level, trump_suit, other_hands=None,
                is_leader=False, beats_best=False):
     """识别一次出牌的操作名, 返回 ACTION_CN 的键; 无特殊操作返回 None。
@@ -260,6 +328,16 @@ def compare_plays(A, B, level, trump_suit):
     else:
         if not ib['all_main'] and ib['suit'] != ia['suit']:
             return -1            # B 异花色垫牌
+    # 甩牌之间: 结构对应 + 最大牌型压过 (盖毙甩牌规则)
+    if ia['type'] == 'throw' and ib['type'] == 'throw':
+        ba, sa = _throw_blocks(A, level, trump_suit)
+        bb, sb = _throw_blocks(B, level, trump_suit)
+        if sa != sb:
+            return -1            # 结构不对应 → B 不能毙 → A 赢
+        # 结构对应: 比较最强块 (排序后首个: 段>刻子>对子>单张)
+        pa = max(cp(c, level, trump_suit) for c in ba[0][2])
+        pb = max(cp(c, level, trump_suit) for c in bb[0][2])
+        return 1 if pb > pa else -1
     pa = max(cp(c, level, trump_suit) for c in A)
     pb = max(cp(c, level, trump_suit) for c in B)
     if pb > pa:
@@ -364,12 +442,15 @@ class Bot:
         return res
 
     # ---------- 首出 ----------
-    def lead(self):
-        """首出策略: 有大牌型(推土机/拖拉机/刻子)优先出大的;
-        同牌型内无分牌优先, 再选强的/张数多的。"""
+    def lead(self, other_hands=None):
+        """首出策略: 甩牌候选(某副牌花色均为当前最大, 多牌型一并打出)优先;
+        其次大牌型(推土机/拖拉机/刻子)优先出大的;
+        同牌型内无分牌优先, 再选强的/张数多的。
+        other_hands: 其他玩家当前手牌, 用于甩牌"均为当前最大"的判定(与 label 全知视角一致)。"""
         if not self.hand:
             return []
         TYPE_PRI = {'bulldozer': 5, 'tractor': 4, 'triplet': 3, 'pair': 2, 'single': 1}
+        THROW_PRI = 6
 
         def _strongest(pool):
             """返回 pool 中优先牌型里最强的一组 (type, cards)"""
@@ -381,13 +462,18 @@ class Bot:
             return None, None
 
         candidates = []                        # (牌型优先级, 组合)
+        # 甩牌候选: 副牌花色中"均为当前最大"的多牌型组合, 一并打出
+        for suit, cards in self._suits_off().items():
+            throw = self._throw_of_suit(suit, cards, other_hands)
+            if throw:
+                candidates.append((THROW_PRI, throw))
         for suit, cards in self._suits_off().items():
             t, c = _strongest(cards)
             if c:
                 candidates.append((TYPE_PRI[t], c))
         if candidates:
             candidates.sort(key=lambda tc: (
-                -tc[0],                        # 大牌型优先(推土机>拖拉机>刻子>对子>单张)
+                -tc[0],                        # 甩牌>推土机>拖拉机>刻子>对子>单张
                 int(any(k.rank in SCORE_RANKS for k in tc[1])),  # 同牌型无分优先
                 -max(cp(k, self.level, self.ts) for k in tc[1]),
                 -len(tc[1]),
@@ -401,6 +487,31 @@ class Bot:
             self._play(c)
             return c
         return []
+
+    def _throw_of_suit(self, suit, suit_cards, other_hands):
+        """判断该副牌花色是否可甩牌: 收集点值从大到小"均为当前最大"的前缀牌,
+        且能构成多牌型组合(classify==throw)且≥3张 → 返回组合, 否则 None。
+        当前最大 = 其他玩家手牌中无该花色非主牌点值更大(规则同 _throw_has_bigger);
+        一旦遇到非最大的组即停止(更小的牌更非最大)。
+        未提供其他玩家手牌(无法判定)时保守不甩。"""
+        if not other_hands:
+            return None
+        others = [c for h in other_hands for c in h
+                  if not is_main(c, self.level, self.ts) and c.suit == suit]
+        g = defaultdict(list)
+        for c in suit_cards:
+            g[c.rank].append(c)
+        combo = []
+        for r in sorted(g, key=lambda r: RANK_ORDER[r], reverse=True):
+            if any(RANK_ORDER.get(o.rank, 0) > RANK_ORDER[r] for o in others):
+                break
+            combo.extend(g[r])
+        if len(combo) < 3:
+            return None
+        ci = classify(combo, self.level, self.ts)
+        if ci['type'] != 'throw':
+            return None                       # 单一牌型(纯拖拉机/对子等)交还现有 lead 逻辑
+        return combo
 
     # ---------- 跟牌 ----------
     def follow(self, lead_cards, best_cards, played_so_far):
@@ -439,6 +550,13 @@ class Bot:
         return self._shed(need)
 
     def _follow_same(self, pool, ltype, need, has_points, best_cards):
+        if ltype == 'throw':
+            # 跟甩牌: 同花色跟 need 张最小牌(无分优先), 不足由 follow 补足其他花色
+            s = sorted(pool, key=lambda c: (int(c.rank in SCORE_RANKS),
+                                            chain_idx(c, self.level, self.ts)))
+            pick = s[:need]
+            self._play(pick)
+            return pick
         combos = self._combos_of(pool)
         if ltype in ('tractor', 'bulldozer'):
             cands = [c for c in combos[ltype] if len(c) == need]
@@ -506,6 +624,8 @@ class Bot:
         pool = self._main()
         if not pool:
             return None
+        if ltype == 'throw':
+            return self._kill_throw(best_cards, played_so_far)
         combos = self._combos_of(pool)
         if ltype in ('tractor', 'bulldozer'):
             cands = [c for c in combos[ltype] if len(c) == need]
@@ -522,6 +642,57 @@ class Bot:
         pick = min(wins, key=lambda c: max(cp(x, self.level, self.ts) for x in c))
         self._play(pick)
         return pick
+
+    def _kill_throw(self, best_cards, played_so_far):
+        """以主牌毙甩牌: 结构对应 + 最强块压过(盖毙甩牌规则的毙牌一侧)。
+        有分才毙, 构造不出或不能压过 → 放弃(走垫牌)。"""
+        has_points = any(c.rank in SCORE_RANKS for _, cl in played_so_far for c in cl)
+        if not has_points:
+            return None
+        blocks, _ = _throw_blocks(best_cards, self.level, self.ts)
+        cand = self._build_kill_throw(blocks)
+        if not cand:
+            return None
+        if compare_plays(best_cards, cand, self.level, self.ts) != 1:
+            return None
+        self._play(cand)
+        return cand
+
+    def _build_kill_throw(self, blocks):
+        """从主牌构造与甩牌结构块一一对应且逐块压过的毙牌组合; 失败返回 None。
+        blocks 为甩牌结构块(强度降序); 主牌块由 _throw_blocks 解析, 贪心匹配。"""
+        pool = self._main()
+        if not pool:
+            return None
+        mb, _ = _throw_blocks(pool, self.level, self.ts)
+        used = [False] * len(mb)
+        picked = []
+        for (n_g, per, tcards) in blocks:
+            t_pow = max(cp(c, self.level, self.ts) for c in tcards)
+            cand = None
+            for i, (mn_g, mper, mcards) in enumerate(mb):
+                if used[i]:
+                    continue
+                if (n_g >= 2) != (mn_g >= 2) or per != mper:
+                    continue                  # 类型须对应: 段/刻子/对子/单张
+                if mn_g < n_g:
+                    continue
+                take = self._top_n_groups(mcards, n_g, per)
+                if max(cp(c, self.level, self.ts) for c in take) <= t_pow:
+                    continue                  # 需压过对应块
+                cand = take
+                used[i] = True
+                break
+            if cand is None:
+                return None
+            picked.extend(cand)
+        return picked
+
+    def _top_n_groups(self, block_cards, n_g, per):
+        """从段块中取牌力最强的 n_g 组 (每组 per 张), 段内组按链序升序排列。"""
+        groups = [block_cards[i:i + per] for i in range(0, len(block_cards), per)]
+        groups.sort(key=lambda grp: max(cp(c, self.level, self.ts) for c in grp), reverse=True)
+        return [c for grp in groups[:n_g] for c in grp]
 
     def _shed(self, need):
         pool = self._off()
@@ -897,7 +1068,7 @@ class Game:
         t = 0
         while any(bots[p].hand for p in range(4)) and t < 100:
             t += 1
-            lead_cards = bots[leader].lead()
+            lead_cards = bots[leader].lead([bots[p].hand for p in range(4) if p != leader])
             if not lead_cards:
                 break
             best_pid, best_cards = leader, lead_cards
@@ -964,6 +1135,12 @@ class Game:
 
 def main():
     import argparse
+    import sys
+    # 避免 Windows GBK 终端打印牌面特殊字符(♠/♥/♣/♦)崩溃
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
     p = argparse.ArgumentParser(description='三副牌升级模拟(CLI测试)')
     p.add_argument('--seed', type=int, default=None)
     p.add_argument('--rounds', type=int, default=200, help='模拟局数上限')

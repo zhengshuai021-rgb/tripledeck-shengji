@@ -216,7 +216,7 @@ class WebSession:
             self._settle_round()
             return
         leader = self.trick_leader
-        lead_cards = bots[leader].lead()
+        lead_cards = bots[leader].lead([bots[p].hand for p in range(4) if p != leader])
         if not lead_cards:
             self._settle_round()
             return
