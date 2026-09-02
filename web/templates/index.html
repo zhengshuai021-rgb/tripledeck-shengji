@@ -360,8 +360,7 @@ function renderCanvas() {
   const rr = gameData.round_record;
 
   drawInfoPanel(w, h, cx, cy);
-  if (rr) drawBottomStrip(w, h);
-  drawBottomInfo(w, h, cx, cy);   // 底牌下方: 埋底/炒底信息 (始终显示)
+  drawBottomPanel(w, h, cx, cy);   // 中央底牌面板: 底牌小牌 + 埋底/炒底记录 (单块自适应, 完整保留)
 
   if (['trump','bury','stir'].includes(gameData.state)) {
     drawPhaseEvents(w, h, cx, cy);   // 亮主/反主牌面 + 炒底资格牌
@@ -410,31 +409,16 @@ function drawInfoPanel(w, h, cx, cy) {
   }
 }
 
-function drawBottomStrip(w, h) {
+// 中央底牌面板: 将"底牌小牌 + 标题"与"埋底/炒底记录"合并为一块自适应圆角面板。
+// 以 cx 水平居中、牌行垂直居中于桌布中心; 标题在牌行上方, 记录在牌行下方逐条完整保留
+// (trump/bury/stir 阶段随揭示进度逐步追加, playing/settled 起显示全部, 不再折叠)。
+function drawBottomPanel(w, h, cx, cy) {
   const rr = gameData.round_record;
   if (!rr) return;
   const bottom = gameData.bottom || [];
   if (!bottom.length) return;
-  const cx = w / 2, cy = h / 2;                 // 底牌放桌布中心点
-  const cw = 28, ch = 42, gap = 3;
-  const total = bottom.length * (cw + gap) - gap;
-  const x0 = cx - total / 2;
-  const y = cy - ch / 2;
-  // 淡色衬底, 标明是中央底牌区
-  ctx.fillStyle = 'rgba(0,0,0,.18)';
-  roundRectPath(ctx, x0 - 8, y - 8, total + 16, ch + 14, 8);
-  ctx.fill();
-  bottom.forEach((card, i) => drawMiniCard(ctx, x0 + i * (cw + gap), y, card, {w: cw, h: ch}));
-  const score = bottom.reduce((s, c) => s + ({5: 5, 10: 10, K: 10}[c.rank] || 0), 0);
-  drawText(ctx, `底牌 ${score}分`, cx, y - 14, 'bold 11px "Microsoft YaHei"', '#f1c40f');
-}
-
-// 底牌下方: 埋底/炒底信息。阶段中逐步展示(跟随炒底进度), 游戏开始(playing/settled)后只保留最后一条。
-// 信息框以 cx 水平居中, 与底牌背景框同一轴线对齐。
-function drawBottomInfo(w, h, cx, cy) {
-  const rr = gameData.round_record;
-  if (!rr) return;
   const events = rr.stir_events || [];
+
   const buryLine = () => {
     if (typeof rr.bury_pid !== 'number' || !rr.buried_cards || !rr.buried_cards.length) return null;
     const cards = rr.buried_cards.map(cardLabel).join(' ');
@@ -446,29 +430,69 @@ function drawBottomInfo(w, h, cx, cy) {
     const act = e.action === '反炒' ? '反炒' : '炒底';
     return `🍳 玩家${e.pid + 1} ${e.label}${act}: 换入 ${taken} | 弃出 ${disc}`;
   };
-  let lines = [];
-  if (gameData.state === 'playing' || gameData.state === 'settled') {
-    // 出牌开始后只保留最后一条: 取最后一条炒底; 无炒底则保留埋底
-    if (events.length) lines.push(stirLine(events[events.length - 1]));
-    else lines.push(buryLine());
-  } else {
-    const b = buryLine();
-    if (b) lines.push(b);
-    events.slice(0, gameData.stir_revealed || 0).forEach(e => lines.push(stirLine(e)));
-  }
-  lines = lines.filter(Boolean);
-  if (!lines.length) return;
-  const y0 = cy + 40;
-  ctx.font = '11px "Microsoft YaHei"';
-  const maxW = Math.max(...lines.map(t => ctx.measureText(t).width));
-  const lineH = 18, padX = 10, padY = 6;
-  ctx.fillStyle = 'rgba(0,0,0,.45)';
-  // 框以文本块中心对齐: 文本行中心在 y0+i*lineH, 块中心 = y0 + (n-1)*lineH/2;
-  // 框顶 = 块中心 - 框高/2 = y0 - lineH/2 - padY (之前漏了 lineH/2 导致框整体下移 9px)
-  const boxY = y0 - lineH / 2 - padY;
-  roundRectPath(ctx, cx - maxW / 2 - padX, boxY, maxW + padX * 2, lines.length * lineH + padY * 2, 8);
+
+  // 记录行: 埋底行恒在首, 炒底/反炒行完整跟随 (阶段中按揭示进度, 出牌/结算后全量)
+  const lines = [];
+  const b = buryLine();
+  if (b) lines.push(b);
+  const done = gameData.state === 'playing' || gameData.state === 'settled';
+  const shown = done ? events.length : (gameData.stir_revealed || 0);
+  events.slice(0, shown).forEach(e => lines.push(stirLine(e)));
+
+  const cw = 28, ch = 42, gap = 3;
+  const score = bottom.reduce((s, c) => s + ({5: 5, 10: 10, K: 10}[c.rank] || 0), 0);
+  const caption = `底牌 ${score}分`;
+  const capFont = 'bold 11px "Microsoft YaHei"';
+  const infoFont = '11px "Microsoft YaHei"';
+
+  ctx.font = capFont;
+  const capW = ctx.measureText(caption).width;
+  ctx.font = infoFont;
+  const infoW = lines.reduce((m, t) => Math.max(m, ctx.measureText(t).width), 0);
+  const cardW = bottom.length * (cw + gap) - gap;
+  const maxW = Math.max(capW, cardW, infoW);
+
+  // 自适应尺寸: 内容宽度取最宽者; 牌行垂直居中于 cy, 标题与记录在其上下展开
+  const padX = 12, padY = 9;
+  const capRowH = 16, gapCap = 4, gapInfo = 8, lineH = 17;
+  const cardsTop = cy - ch / 2;
+  const capC = cardsTop - gapCap - capRowH / 2;              // 标题文字中心
+  const lineFirstC = cardsTop + ch + gapInfo + lineH / 2;    // 首条记录中心
+  const contentTop = cardsTop - gapCap - capRowH;
+  const contentBottom = lines.length
+    ? lineFirstC + (lines.length - 1) * lineH + lineH / 2
+    : cardsTop + ch;
+  const boxX = cx - maxW / 2 - padX;
+  const boxY = contentTop - padY;
+  const boxW = maxW + padX * 2;
+  const boxH = contentBottom + padY - boxY;
+
+  // 单块半透明衬底 + 细描边
+  ctx.fillStyle = 'rgba(0,0,0,.42)';
+  roundRectPath(ctx, boxX, boxY, boxW, boxH, 10);
   ctx.fill();
-  lines.forEach((t, i) => drawText(ctx, t, cx, y0 + i * lineH, '11px "Microsoft YaHei"', '#e8d9a0'));
+  ctx.strokeStyle = 'rgba(255,255,255,.12)';
+  ctx.lineWidth = 1;
+  roundRectPath(ctx, boxX + .5, boxY + .5, boxW - 1, boxH - 1, 10);
+  ctx.stroke();
+
+  // 标题
+  drawText(ctx, caption, cx, capC, capFont, '#f1c40f');
+
+  // 底牌小牌
+  const x0 = cx - cardW / 2;
+  bottom.forEach((card, i) => drawMiniCard(ctx, x0 + i * (cw + gap), cardsTop, card, {w: cw, h: ch}));
+
+  if (!lines.length) return;
+  // 牌行与记录间的细分隔线
+  const divY = cardsTop + ch + gapInfo / 2;
+  ctx.strokeStyle = 'rgba(255,255,255,.10)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(boxX + padX, divY);
+  ctx.lineTo(boxX + boxW - padX, divY);
+  ctx.stroke();
+  lines.forEach((t, i) => drawText(ctx, t, cx, lineFirstC + i * lineH, infoFont, '#e8d9a0'));
 }
 
 // 玩家出牌区中心位置 (0下/1右/2上/3左)
