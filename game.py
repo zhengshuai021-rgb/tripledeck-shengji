@@ -1131,6 +1131,93 @@ class Game:
         return self.records
 
 
+# ==================== Excel 导出 ====================
+
+def save_excel(records, game, path):
+    """把 records(RoundRecord 列表)导出为 .xlsx。path 可为文件路径或文件对象(BytesIO)。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    from datetime import datetime
+
+    wb = Workbook()
+    tf = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    tfont = Font(size=14, bold=True, color="FFFFFF")
+    hf = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    hfont = Font(bold=True, color="FFFFFF")
+
+    # ====== Sheet1: 对局总览 ======
+    ws = wb.active
+    ws.title = "对局总览"
+    ws.merge_cells('A1:D1')
+    c = ws['A1']
+    c.value = "三副牌升级对局记录"
+    c.font = tfont
+    c.fill = tf
+    c.alignment = Alignment(horizontal='center')
+    winner = getattr(game, 'winner', None) or '未完成'
+    seed = getattr(game, 'seed', None)
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M')
+    overview = [("生成时间", ts), ("总局数", len(records))]
+    if seed is not None:
+        overview.append(("种子", seed))
+    overview.append(("胜方", winner))
+    for i, (k, v) in enumerate(overview):
+        r = 2 + i
+        ws.cell(row=r, column=1, value=k).font = Font(bold=True)
+        ws.cell(row=r, column=2, value=v)
+    ws.column_dimensions['A'].width = 12
+    ws.column_dimensions['B'].width = 34
+
+    # ====== Sheet2: 每局记录 ======
+    ws2 = wb.create_sheet("每局记录")
+    hdrs = ['局数', '本局级牌', '庄家', '庄家方', '闲家方', '主花色', '定主方式',
+            '叫主/反主', '底分', '闲家得分', '抠底', '庄+级', '闲+级', '庄权交接',
+            '结果', '队伍A等级', '队伍B等级']
+    for col, h in enumerate(hdrs, 1):
+        cell = ws2.cell(row=1, column=col, value=h)
+        cell.font = hfont
+        cell.fill = hf
+        cell.alignment = Alignment(horizontal='center')
+
+    def _plist(pids):
+        return '、'.join(f"玩家{p + 1}" for p in (pids or []))
+
+    for i, rec in enumerate(records):
+        r = 2 + i
+        method = getattr(rec, 'trump_method', 'none')
+        method_cn = {'call': '叫主', 'none': '无人叫主/无主'}.get(method, str(method))
+        calls = getattr(rec, 'call_history', None) or []
+        calls_txt = ' → '.join(f"玩家{c['pid'] + 1} {c['count']}张{c['suit']}" for c in calls) or '—'
+        suit = getattr(rec, 'trump_suit', '') or ''
+        koudi = bool(getattr(rec, 'koudi', False))
+        vals = [rec.rnd,
+                getattr(rec, 'level', ''),
+                f"玩家{rec.dealer_pid + 1}",
+                _plist(getattr(rec, 'dt', None)),
+                _plist(getattr(rec, 'at', None)),
+                SUIT_CN.get(suit, suit or '无主'),
+                method_cn,
+                calls_txt,
+                getattr(rec, 'bottom_score', 0),
+                getattr(rec, 'attacker_score', 0),
+                (f"是 ×{getattr(rec, 'koudi_multiplier', 0)}") if koudi else '否',
+                getattr(rec, 'dealer_up', 0),
+                getattr(rec, 'attacker_up', 0),
+                '是' if getattr(rec, 'side_switch', False) else '否',
+                getattr(rec, 'result', ''),
+                getattr(rec, 'team_a_level_after', ''),
+                getattr(rec, 'team_b_level_after', '')]
+        for col, v in enumerate(vals, 1):
+            cell = ws2.cell(row=r, column=col, value=v)
+            cell.alignment = Alignment(horizontal='center')
+    for col in range(1, len(hdrs) + 1):
+        ws2.column_dimensions[get_column_letter(col)].width = 15
+    ws2.freeze_panes = 'A2'
+
+    wb.save(path)
+
+
 # ==================== CLI 测试 ====================
 
 def main():

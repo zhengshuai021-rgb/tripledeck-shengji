@@ -28,6 +28,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .btn-step { background: #2980b9; }
 .btn-auto { background: #34495e; color: #ecf0f1; }
 .btn-auto.running { background: #e67e22; color: white; }
+.btn-export { background: #34495e; color: #ecf0f1; }
 .btn-reset { background: #c0392b; }
 .btn-replay { background: #8e44ad; }
 .label { font-size: 11px; color: #ecf0f1; white-space: nowrap; }
@@ -139,6 +140,7 @@ input { width: 60px; }
   <button class="btn-step" id="btnPrev" style="display:none">⏪ 上一步</button>
   <button class="btn-auto" id="btnAuto" disabled>▶▶ 自动</button>
   <button class="btn-replay" id="btnGames" disabled>📋 对局记录</button>
+  <button class="btn-export" id="btnExport" disabled>📊 导出</button>
   <button class="btn-reset" id="btnReset">🔄 重置</button>
   <span class="label">延迟:</span>
   <select id="speedSel">
@@ -177,6 +179,21 @@ input { width: 60px; }
   </div>
 </div>
 
+<div class="modal-overlay hidden" id="limitModal">
+  <div class="modal" style="position:relative">
+    <h2 id="limitModalTitle">⚠️ 已达局数上限</h2>
+    <button id="limitClose" class="lp-x" title="关闭" style="position:absolute; top:10px; right:10px; background:#c0392b; color:#fff; border-radius:6px; width:24px; height:24px; font-size:12px">✕</button>
+    <div class="result" style="margin-top:8px; line-height:1.9; color:#ecf0f1; font-size:13px">
+      当前对局数已达上限，如果需要继续对局，请先清空已有局数。<br>
+      已存在的对局数据不受影响，可继续使用回放功能查看，您可选择以下操作步骤继续开始新对局
+    </div>
+    <div class="actions">
+      <button id="limitExport" style="background:#27ae60">📊 导出数据</button>
+      <button id="limitReset" style="background:#c0392b">🔄 重置对局</button>
+    </div>
+  </div>
+</div>
+
 <div id="logPanel" class="hidden">
   <div class="lp-head">
     <span class="lp-title" id="logTitle">文字记录</span>
@@ -192,6 +209,7 @@ input { width: 60px; }
 const SUIT_CN = {'♠':'黑桃','♥':'红桃','♣':'草花','♦':'方块'};
 const SCORE_VALUES = {'5':5, '10':10, 'K':10};
 const PATTERN_CN = {'single':'单张','pair':'对子','triplet':'刻子','tractor':'拖拉机','bulldozer':'推土机','throw':'甩牌'};
+const MAX_RECORDS = 1000;    // 单场累计对局记录上限(达上限需重置才能继续)
 
 let sessionId = null;
 let gameData = null;
@@ -353,6 +371,7 @@ function renderCanvas() {
     drawCenter(w, h, cx, cy);
   }
   if (gameData.game_over) drawGameOver(w, h);
+  else if (gameData.limit_reached) drawLimitOverlay(w, h);
 }
 
 function drawInfoPanel(w, h, cx, cy) {
@@ -667,6 +686,21 @@ function drawGameOver(w, h) {
   drawText(ctx, '点击「重置」重新开始', w / 2, h / 2 + 60, '12px "Microsoft YaHei"', '#bdc3c7');
 }
 
+// 达上限后的画布提示: 叠加半透明提示带, 回放/导出仍可用, 开始新对局需先重置
+function drawLimitOverlay(w, h) {
+  const msg = [`⚠️ 已达 ${MAX_RECORDS} 局上限`, '回放 / 导出仍可用 · 重置后才能开始新对局'];
+  const lineH = 30, padY = 16;
+  const boxH = msg.length * lineH + padY * 2;
+  const y0 = Math.max(200, h / 2 - 40);
+  ctx.fillStyle = 'rgba(0,0,0,.55)';
+  ctx.fillRect(0, y0 - boxH / 2, w, boxH);
+  ctx.fillStyle = '#f1c40f';
+  ctx.fillRect(0, y0 - boxH / 2, 6, boxH);
+  msg.forEach((t, i) => drawText(ctx, t, w / 2, y0 - boxH / 2 + padY + i * lineH,
+    `bold ${i === 0 ? 22 : 13}px "Microsoft YaHei"`,
+    i === 0 ? '#f1c40f' : '#ecf0f1'));
+}
+
 function syncStatus() {
   const text = gameData?.status || '就绪 | 点击「开始」启动游戏';
   document.getElementById('statusTop').textContent = text;
@@ -706,12 +740,21 @@ function animateTrick(done) {
 }
 
 async function advance() {
-  if (!sessionId || animating) return;
+  if (!sessionId || animating || gameData?.limit_reached) return;
   animating = true;
   closeModal();
   if (gameData && lastRound !== gameData.round) { revealNum = -1; revealShown = 0; }
   gameData = await apiCall('api/step', {session_id: sessionId});
   refreshLogIfOpen();
+  if (gameData.error) { animating = false; return; }
+  if (gameData.limit_reached) {            // 达 1000 局上限: 冻结, 弹窗提示(需重置才能继续)
+    stopAuto();
+    setButtons(false);                     // ▶开始可点(点击弹上限提示), 导出可用
+    render();
+    animating = false;
+    openLimitModal();
+    return;
+  }
   if (gameData.game_over) { stopAuto(); render(); animating = false; return; }
   lastRound = gameData.round;
   if (!gameData.current_trick) {
@@ -732,6 +775,7 @@ function onTrickDone() {
 
 async function doStep() {
   if (!sessionId || autoRunning || animating || gameData?.game_over) return;
+  if (gameData?.limit_reached) { openLimitModal(); return; }   // 已冻结: 需先重置
   await advance();
 }
 
@@ -789,6 +833,45 @@ function showSettlementModal() {
 }
 
 function closeModal() { document.getElementById('settleModal').classList.add('hidden'); }
+
+// ---- 已达上限弹窗: 只能 导出数据 / 重置对局, 或 ✕ 关闭后继续回放 ----
+function openLimitModal() {
+  closeModal();
+  closeGames();
+  document.getElementById('limitModalTitle').textContent = `⚠️ 已达 ${MAX_RECORDS} 局上限`;
+  document.getElementById('limitModal').classList.remove('hidden');
+}
+function closeLimitModal() { document.getElementById('limitModal').classList.add('hidden'); }
+
+// 导出全部对局记录为 Excel (达上限后同样可用)
+async function doExport() {
+  if (!sessionId) return;
+  closeLimitModal();
+  closeModal();
+  closeGames();
+  const res = await fetch('api/export', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({session_id: sessionId}),
+  });
+  if (!res.ok) {
+    let msg = '导出失败';
+    try { const d = await res.json(); if (d.error) msg = d.error; } catch (e) {}
+    alert(msg);
+    return;
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename="?([^";]+)"?/.exec(cd);
+  a.download = m ? m[1] : '三副牌升级.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 // ---- 回放 UI ----
 
@@ -983,6 +1066,7 @@ function setButtons(running) {
   document.getElementById('btnStart').disabled = running;
   document.getElementById('btnStep').disabled = !running || autoRunning;
   document.getElementById('btnAuto').disabled = !running;
+  document.getElementById('btnExport').disabled = !running && !sessionId;   // 有会话即可导出(含达上限后)
   updateReplayUI();
 }
 
@@ -992,6 +1076,10 @@ async function apiCall(url, data) {
 }
 
 async function newGame() {
+  if (gameData && (gameData.records_count || 0) >= MAX_RECORDS) {  // 已达上限: 需先重置
+    openLimitModal();
+    return;
+  }
   const body = {};
   const seed = document.getElementById('seedInput').value.trim();
   if (seed) body.seed = parseInt(seed, 10);
@@ -1038,6 +1126,7 @@ function toggleAuto() { autoRunning ? stopAuto() : startAuto(); }
 
 async function resetGame() {
   stopAuto();
+  closeLimitModal();
   if (sessionId) await apiCall('api/reset', {session_id: sessionId});
   sessionId = null;
   gameData = null;
@@ -1056,12 +1145,16 @@ document.getElementById('btnStep').addEventListener('click', doStep);
 document.getElementById('btnPrev').addEventListener('click', doPrev);
 document.getElementById('btnAuto').addEventListener('click', toggleAuto);
 document.getElementById('btnGames').addEventListener('click', openGames);
+document.getElementById('btnExport').addEventListener('click', doExport);
 document.getElementById('btnLog').addEventListener('click', toggleLog);
 document.getElementById('btnLive').addEventListener('click', doLive);
 document.getElementById('gamesClose').addEventListener('click', closeGames);
 document.getElementById('logClose').addEventListener('click', hideLog);
 document.getElementById('btnReset').addEventListener('click', resetGame);
 document.getElementById('modalContinue').addEventListener('click', doStep);
+document.getElementById('limitClose').addEventListener('click', closeLimitModal);
+document.getElementById('limitExport').addEventListener('click', doExport);
+document.getElementById('limitReset').addEventListener('click', resetGame);
 document.getElementById('speedSel').addEventListener('change', e => { speed = parseInt(e.target.value, 10) || 400; });
 canvas.addEventListener('click', () => {
   if (!sessionId || gameData?.game_over) return;

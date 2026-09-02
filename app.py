@@ -12,7 +12,9 @@ import os
 import sys
 import time
 import random
-from flask import Flask, render_template, jsonify, request
+import io
+from datetime import datetime
+from flask import Flask, render_template, jsonify, request, send_file
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -21,6 +23,7 @@ from game import (
     SUITS, SUIT_CN, SCORE_RANKS, SCORE_VALUES, RANK_ORDER,
     is_main, cp, cards_str, classify, compare_plays,
     determine_trump, determine_stir, settle_round, PATTERN_CN, ACTION_CN, label_play,
+    save_excel,
 )
 
 app = Flask(__name__, template_folder='web/templates', static_folder='web/static')
@@ -30,6 +33,7 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 sessions = {}
 SESSION_TTL = 1800
+MAX_RECORDS = 1000      # 单会话对局记录(局)上限
 
 
 def _cleanup_sessions():
@@ -66,6 +70,7 @@ class WebSession:
         self._no_stir_shown = False
         self._stir_computed = False
         self.engine_state = 'idle'
+        self.limit_reached = False          # 对局记录数达上限后冻结(需重置才能继续)
         self._last_status = '就绪 | 点击「开始」启动游戏'
         self._last_access = time.time()
 
@@ -84,6 +89,7 @@ class WebSession:
         self.records = []
         self.winner = None
         self.game_over = False
+        self.limit_reached = False
         self._start_round()
         self._timeline = [self._get_snapshot()]
         self._view = 0
@@ -136,6 +142,14 @@ class WebSession:
             self._view += 1
             return self._serve()
         if self.game_over:
+            return self._serve()
+        # 达 1000 局上限且已结算: 冻结, 不开新局 (仅回放/导出/重置可用)
+        if (self.engine_state == 'settled' and not self.game_over
+                and len(self.records) >= MAX_RECORDS):
+            if not self.limit_reached:
+                self.limit_reached = True
+                self._set_status(f'⚠️ 已达 {MAX_RECORDS} 局上限 | 可回放/导出，开始新对局前请先「重置对局」')
+            self._timeline[self._view] = self._get_snapshot()   # 刷新当前快照(带 limit 标记)
             return self._serve()
         prev_rnd = self.rec.rnd if self.rec else None
         if self.engine_state == 'trump':
@@ -420,6 +434,8 @@ class WebSession:
             'initial_bottom': self._cards_to_dicts(rec.initial_bottom) if rec else [],
             'status': self._last_status,
             'winner': self.winner,
+            'records_count': len(self.records),
+            'limit_reached': self.limit_reached,
         }
 
         if self.current_call:
@@ -636,6 +652,31 @@ def api_reset():
     if sid in sessions:
         del sessions[sid]
     return jsonify({'status': 'ok'})
+
+
+@app.route('/api/export', methods=['POST'])
+def api_export():
+    """导出全部对局记录为 Excel(.xlsx)"""
+    sid = request.json.get('session_id')
+    _cleanup_sessions()
+    sess = sessions.get(sid)
+    if not sess:
+        return jsonify({'error': 'session not found'}), 404
+    sess._last_access = time.time()
+
+    class _FakeGame:
+        pass
+
+    g = _FakeGame()
+    g.winner = sess.winner
+    g.seed = sess.seed
+    buf = io.BytesIO()
+    save_excel(sess.records, g, buf)
+    buf.seek(0)
+    fname = f"三副牌升级_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(buf,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=fname)
 
 
 if __name__ == '__main__':
