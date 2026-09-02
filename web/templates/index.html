@@ -302,8 +302,14 @@ function drawMiniCard(c, x, y, card, opts = {}) {
   if (isMainCard(card)) {
     c.fillStyle = '#f1c40f';
     c.font = '7px "Microsoft YaHei"';
-    c.textAlign = 'right'; c.textBaseline = 'top';
-    c.fillText('★', x + w - 3, y + 2);
+    if (opts.starTR) {
+      // 竖排手牌(侧边玩家2/4): 底部被下一张牌盖住, 星标放右上角
+      c.textAlign = 'right'; c.textBaseline = 'top';
+      c.fillText('★', x + w - 3, y + 2);
+    } else {
+      c.textAlign = 'left'; c.textBaseline = 'bottom';
+      c.fillText('★', x + 2, y + h - 2);
+    }
   }
 }
 
@@ -325,9 +331,9 @@ function drawBigCard(c, x, y, card, opts = {}) {
   c.fillText(cardLabel(card), x + w / 2, y + h / 2);
   if (isMainCard(card)) {
     c.fillStyle = '#f1c40f';
-    c.font = '10px "Microsoft YaHei"';
-    c.textAlign = 'right'; c.textBaseline = 'top';
-    c.fillText('★', x + w - 6, y + 4);
+    c.font = '14px "Microsoft YaHei"';
+    c.textAlign = 'left'; c.textBaseline = 'bottom';
+    c.fillText('★', x + 4, y + h - 6);
   }
 }
 
@@ -570,7 +576,7 @@ function drawSideFan(pid, x, cy, cw, ch) {
     const idx = i % perCol;
     const xx = x0 + col * (cw + gap);
     const yy = y0 + idx * step;
-    drawMiniCard(ctx, xx, yy, cards[i], {w: cw, h: ch, topLabel: true, topFont});
+    drawMiniCard(ctx, xx, yy, cards[i], {w: cw, h: ch, topLabel: true, topFont, starTR: true});
   }
   const blockW = cols * cw + (cols - 1) * gap;
   const titleX = isLeft ? x + blockW / 2 : x - blockW / 2;
