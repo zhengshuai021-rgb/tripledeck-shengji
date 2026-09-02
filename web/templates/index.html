@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>三副牌升级 · Web GUI v1.0</title>
+<title>三副牌升级 · Web GUI v1.2</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -29,6 +29,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .btn-auto { background: #34495e; color: #ecf0f1; }
 .btn-auto.running { background: #e67e22; color: white; }
 .btn-reset { background: #c0392b; }
+.btn-replay { background: #8e44ad; }
 .label { font-size: 11px; color: #ecf0f1; white-space: nowrap; }
 select, input {
   height: 24px; background: #3d566e; color: white; border: 0; outline: 0;
@@ -61,15 +62,83 @@ input { width: 60px; }
 .modal th { color: #bdc3c7; width: 120px; }
 .modal .actions { text-align: center; margin-top: 16px; }
 .modal .actions button { width: 180px; height: 50px; background: #2980b9; font-size: 14px; font-weight: 700; }
+.btn-mini { height: 24px; padding: 0 10px; font-size: 11px; background: #2980b9; }
+#gamesTable th { width: auto; text-align: center; }
+#gamesTable td { text-align: center; }
+#gamesTable thead th { position: sticky; top: 0; background: #1a2a3a; }
+#gamesTable tbody tr { cursor: pointer; }
+#gamesTable tbody tr:hover { background: #24384d; }
+/* 文字记录面板: 记录按钮上方上拉半透明窗口 */
+#logPanel {
+  position: fixed; right: 12px; bottom: 80px; z-index: 45;
+  width: 500px; max-width: calc(100vw - 24px);
+  max-height: min(66vh, 620px);
+  display: flex; flex-direction: column;
+  background: rgba(13, 24, 38, .95);
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,.5);
+  overflow: hidden; font-size: 12px;
+}
+#logPanel.hidden { display: none; }
+.lp-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px 7px 14px; background: rgba(255,255,255,.06);
+  border-bottom: 1px solid rgba(255,255,255,.1);
+}
+.lp-title { flex: 1; color: #f1c40f; font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lp-x { height: 24px; width: 24px; padding: 0; border-radius: 6px; background: #c0392b; font-size: 12px; line-height: 1; }
+#logBody { overflow: auto; padding: 8px 12px 10px; }
+#logBody .r-hdr { font-weight: 700; font-size: 13px; color: #f1c40f; margin: 2px 0 2px; }
+#logBody .r-side { color: #bdc3c7; margin-bottom: 4px; }
+#logBody .lsect {
+  color: #7f8c8d; font-size: 11px; margin: 8px 0 3px;
+  display: flex; align-items: center; gap: 6px;
+}
+#logBody .lsect::before { content: '▍'; color: #2980b9; font-size: 12px; }
+#logBody .ln { color: #dbe2ea; line-height: 1.7; }
+#logBody .ln b { color: #ecf0f1; }
+#logBody .ln.dim { color: #7f8c8d; }
+#logBody .k { color: #9aa7b5; margin-right: 6px; }
+#logBody .pcards { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; margin-top: 1px; }
+#logBody .lchip {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 19px; min-width: 26px; padding: 0 3px; box-sizing: border-box;
+  background: rgba(255,255,255,.92); border-radius: 4px;
+  font-weight: 700; font-size: 11px; box-shadow: 0 1px 2px rgba(0,0,0,.3);
+  white-space: nowrap;
+}
+#logBody .trick {
+  margin: 6px 0; padding: 5px 8px 6px;
+  background: rgba(255,255,255,.035); border-left: 3px solid #2980b9;
+  border-radius: 4px;
+}
+#logBody .tk-head { color: #ecf0f1; font-weight: 700; margin-bottom: 4px; }
+#logBody .tk-head .ptn { color: #5dade2; font-weight: 400; }
+#logBody .play { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+#logBody .plab { flex: 0 0 84px; text-align: right; line-height: 1.3; white-space: nowrap; }
+#logBody .plab b { color: #ecf0f1; }
+#logBody .plab .s { font-size: 9px; padding: 0 3px; border-radius: 3px; margin-left: 3px; }
+#logBody .plab .s.dz { background: rgba(241,196,15,.2); color: #f1c40f; }
+#logBody .plab .s.ak { background: rgba(93,173,226,.2); color: #5dade2; }
+#logBody .plab small { display: block; color: #7f8c8d; font-size: 10px; }
+#logBody .play.win { background: rgba(241,196,15,.09); border-radius: 4px; }
+#logBody .play.win .plab b { color: #f1c40f; }
+#logBody .play.win .plab small { color: #f1c40f; font-weight: 700; }
+#logBody .settle { margin-top: 8px; padding: 6px 8px; border-radius: 4px; background: rgba(241,196,15,.08); border: 1px solid rgba(241,196,15,.3); }
+#logBody .settle .r-result { color: #f1c40f; font-weight: 700; font-size: 13px; margin-top: 2px; }
+#logBody .ln .p-a { color: #e67e22; font-weight: 700; }
+#logBody .ln .p-s { color: #f39c12; }
 </style>
 </head>
 <body>
 <div class="top-frame">
   <div class="title">🎴 三副牌升级</div>
-  <span class="subtitle">v1.0 · 全自动对局</span>
+  <span class="subtitle">v1.2 · 全自动对局</span>
   <button class="btn-start" id="btnStart">▶ 开始</button>
   <button class="btn-step" id="btnStep" disabled>▶ 下一步</button>
+  <button class="btn-step" id="btnPrev" style="display:none">⏪ 上一步</button>
   <button class="btn-auto" id="btnAuto" disabled>▶▶ 自动</button>
+  <button class="btn-replay" id="btnGames" disabled>📋 对局记录</button>
   <button class="btn-reset" id="btnReset">🔄 重置</button>
   <span class="label">延迟:</span>
   <select id="speedSel">
@@ -93,6 +162,32 @@ input { width: 60px; }
   </div>
 </div>
 
+<div class="modal-overlay hidden" id="gamesModal">
+  <div class="modal">
+    <h2>对局记录</h2>
+    <div style="max-height:55vh; overflow:auto;">
+      <table id="gamesTable">
+        <thead>
+          <tr><th>局数</th><th>本局级牌</th><th>获胜方</th><th>得分数</th><th>升级数</th><th>操作</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="actions"><button id="gamesClose">关闭</button></div>
+  </div>
+</div>
+
+<div id="logPanel" class="hidden">
+  <div class="lp-head">
+    <span class="lp-title" id="logTitle">文字记录</span>
+    <button id="logClose" class="lp-x" title="关闭">✕</button>
+  </div>
+  <div id="logBody"></div>
+</div>
+
+<button id="btnLive" style="position:fixed; right:90px; bottom:38px; z-index:40; display:none; background:#16a085">⏭ 退出回放</button>
+<button id="btnLog" style="position:fixed; right:12px; bottom:38px; z-index:40; display:none; background:#8e44ad">📝 记录</button>
+
 <script>
 const SUIT_CN = {'♠':'黑桃','♥':'红桃','♣':'草花','♦':'方块'};
 const SCORE_VALUES = {'5':5, '10':10, 'K':10};
@@ -109,6 +204,9 @@ let revealShown = 0;     // 已亮到第几位玩家
 let animating = false;   // 是否正在亮牌动画中
 let animTimer = null;
 let lastRound = -1;
+let logOpen = false;    // 文字记录面板是否展开
+let logRnd = -1;        // 面板当前展示的局
+let logLive = -1;       // 面板加载时引擎 live 步数 (仅同局增长时重载)
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -259,6 +357,19 @@ function renderCanvas() {
 
 function drawInfoPanel(w, h, cx, cy) {
   const rr = gameData.round_record;
+  const x = 10;
+  let y0 = 14;
+  // 回放态: 牌桌左上角红色小标志
+  if (gameData.replay) {
+    const txt = '🔴 回放中';
+    ctx.font = 'bold 13px "Microsoft YaHei"';
+    const tw = ctx.measureText(txt).width;
+    ctx.fillStyle = 'rgba(0,0,0,.35)';
+    roundRectPath(ctx, x - 3, y0 - 11, tw + 12, 22, 5);
+    ctx.fill();
+    drawText(ctx, txt, x + 3, y0, 'bold 13px "Microsoft YaHei"', '#ff6b6b', 'left');
+    y0 += 28;
+  }
   let lines = [];
   lines.push(`第 ${gameData.round} 局`);
   if (rr) lines.push(`打 ${rr.level}`);
@@ -266,7 +377,6 @@ function drawInfoPanel(w, h, cx, cy) {
   lines.push(`庄家: 玩家${gameData.dealer_pid + 1}`);
   lines.push(`队伍A: ${gameData.team_a_level}`);
   lines.push(`队伍B: ${gameData.team_b_level}`);
-  const x = 10, y0 = 14;
   lines.forEach((t, i) => drawText(ctx, t, x, y0 + i * 18, 'bold 12px "Microsoft YaHei"', '#ecf0f1', 'left'));
   // 已收分
   if (rr && gameData.state !== 'trump') {
@@ -422,7 +532,8 @@ function drawSideFan(pid, x, cy, cw, ch) {
   const rect = canvas.getBoundingClientRect();
   const h = rect.height || 830;
   const isLeft = pid === 3;
-  const yTop = 118;
+  // 左右两侧玩家的整体纵向起点: 下移避开左上角信息面板(回放态含「🔴 回放中」横幅/已收分行)
+  const yTop = 184;
   const yBottom = Math.max(yTop + 80, h - 172);
   const span = yBottom - yTop;
   const baseStep = 18;                          // 相邻牌上下重叠, 每张露出 18px
@@ -564,6 +675,7 @@ function syncStatus() {
 
 function render() {
   syncStatus();
+  updateReplayUI();
   renderCanvas();
 }
 
@@ -599,6 +711,7 @@ async function advance() {
   closeModal();
   if (gameData && lastRound !== gameData.round) { revealNum = -1; revealShown = 0; }
   gameData = await apiCall('api/step', {session_id: sessionId});
+  refreshLogIfOpen();
   if (gameData.game_over) { stopAuto(); render(); animating = false; return; }
   lastRound = gameData.round;
   if (!gameData.current_trick) {
@@ -620,6 +733,35 @@ function onTrickDone() {
 async function doStep() {
   if (!sessionId || autoRunning || animating || gameData?.game_over) return;
   await advance();
+}
+
+// 上一步: 回到上一个快照 (仅回放态可用), 直接渲染不播亮牌动画
+async function doPrev() {
+  if (!sessionId || autoRunning || animating || !gameData?.can_prev) return;
+  gameData = await apiCall('api/prev', {session_id: sessionId});
+  refreshLogIfOpen();
+  if (!gameData.current_trick) {
+    revealNum = -1; revealShown = 0;
+  } else if (revealNum !== gameData.current_trick.num) {
+    revealNum = gameData.current_trick.num;
+    revealShown = gameData.current_trick.played.length;   // 回退到的圈整圈亮出
+  }
+  closeModal();
+  render();
+}
+
+// 退出回放: 回到直播前沿 (只移游标), 直接渲染不播亮牌动画
+async function doLive() {
+  if (!sessionId || autoRunning || animating || !gameData?.replay) return;
+  gameData = await apiCall('api/live', {session_id: sessionId});
+  if (!gameData.current_trick) {
+    revealNum = -1; revealShown = 0;
+  } else if (revealNum !== gameData.current_trick.num) {
+    revealNum = gameData.current_trick.num;
+    revealShown = gameData.current_trick.played.length;   // 回到前沿时当前圈整圈亮出
+  }
+  closeModal();
+  render();
 }
 
 function showSettlementModal() {
@@ -648,10 +790,200 @@ function showSettlementModal() {
 
 function closeModal() { document.getElementById('settleModal').classList.add('hidden'); }
 
+// ---- 回放 UI ----
+
+// 上一步/退出回放/记录按钮仅回放态显示; 对局记录有会话且非自动播放时可用
+function updateReplayUI() {
+  const replay = !!gameData?.replay;
+  document.getElementById('btnPrev').style.display = replay ? '' : 'none';
+  document.getElementById('btnPrev').disabled = !gameData?.can_prev;
+  document.getElementById('btnLog').style.display = replay ? '' : 'none';
+  document.getElementById('btnLive').style.display = replay ? '' : 'none';
+  document.getElementById('btnGames').disabled = !sessionId || autoRunning;
+  if (!replay && logOpen) hideLog();   // 离开回放态自动收起文字面板
+}
+
+async function openGames() {
+  if (!sessionId) return;
+  if (autoRunning) stopAuto();
+  const resp = await fetch(`api/games?session_id=${sessionId}`);
+  const data = await resp.json();
+  if (data.error) { alert(data.error); return; }
+  const tbody = document.querySelector('#gamesTable tbody');
+  tbody.innerHTML = '';
+  (data.games || []).forEach(g => {
+    const tr = document.createElement('tr');
+    tr.dataset.rnd = g.rnd;
+    const ups = g.in_progress ? '—' : `庄+${g.dealer_up} 闲+${g.attacker_up}`;
+    const cells = [g.rnd, `打 ${g.level}`, g.winner,
+                   g.in_progress ? '进行中' : `${g.score} 分`, ups];
+    cells.forEach(t => {
+      const td = document.createElement('td');
+      td.textContent = t;
+      tr.appendChild(td);
+    });
+    const td = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.textContent = '回放';
+    btn.className = 'btn-mini';
+    btn.addEventListener('click', e => { e.stopPropagation(); replayRound(g.rnd); });
+    td.appendChild(btn);
+    tr.appendChild(td);
+    tr.addEventListener('click', () => replayRound(g.rnd));
+    tbody.appendChild(tr);
+  });
+  document.getElementById('gamesModal').classList.remove('hidden');
+}
+
+function closeGames() { document.getElementById('gamesModal').classList.add('hidden'); }
+
+// 回放某一局: 后端把游标跳到该局初始快照, 前端从头渲染
+async function replayRound(rnd) {
+  if (!sessionId || animating) return;
+  if (autoRunning) stopAuto();
+  const resp = await apiCall('api/replay', {session_id: sessionId, rnd});
+  if (resp.error) { alert(resp.error); return; }
+  gameData = resp;
+  closeGames();
+  refreshLogIfOpen();
+  revealNum = -1; revealShown = 0;
+  if (gameData.current_trick) {
+    revealNum = gameData.current_trick.num;
+    revealShown = gameData.current_trick.played.length;
+  }
+  render();
+}
+
+// ---- 文字记录面板 (回放态右下角上拉, 半透明) ----
+
+function hideLog() {
+  logOpen = false;
+  document.getElementById('logPanel').classList.add('hidden');
+}
+
+// 记录按钮: 展开/收起切换; 展开时拉取当前所看局的事件流并渲染
+async function toggleLog() {
+  if (!sessionId || !gameData) return;
+  if (logOpen) { hideLog(); return; }
+  if (await loadLog()) {
+    logOpen = true;
+    document.getElementById('logPanel').classList.remove('hidden');
+  }
+}
+
+// 拉取并渲染第 gameData.round 局的文字记录 (事件流已结构化, 前端排版); 成功返回 true
+async function loadLog() {
+  if (!sessionId || !gameData) return false;
+  const rnd = gameData.round;
+  const resp = await fetch(`api/logs?session_id=${sessionId}&rnd=${rnd}`);
+  const data = await resp.json();
+  if (data.error) { alert(data.error); return false; }
+  renderLogBody(rnd, data.events || []);
+  document.getElementById('logTitle').textContent = `第 ${rnd} 局 · 文字记录`;
+  logRnd = rnd;
+  logLive = gameData.live_steps || 0;
+  return true;
+}
+
+// 导航后若面板开着且换局/同局推进到新内容 → 重载
+function refreshLogIfOpen() {
+  if (!logOpen || !sessionId || !gameData) return;
+  const rnd = gameData.round;
+  const live = gameData.live_steps || 0;
+  if (rnd === logRnd && live <= logLive) return;
+  loadLog();
+}
+
+function lpChip(c) {
+  if (!c) return '';
+  const col = c.rank === '大王' ? '#c0392b'
+            : c.rank === '小王' ? '#34495e'
+            : (c.suit === '♥' || c.suit === '♦') ? '#c0392b' : '#1a1a2e';
+  const lab = (c.rank === '大王' || c.rank === '小王') ? c.rank : `${c.rank}${c.suit}`;
+  return `<span class="lchip" style="color:${col}">${lab}</span>`;
+}
+function lpChips(cards) { return (cards || []).map(lpChip).join(''); }
+
+// 事件流 → 按局/圈分组、玩家对玩家、牌对牌的 HTML
+function renderLogBody(rnd, evs) {
+  const html = [];
+  const sides = {};                                  // pid -> 庄/闲
+  let dt = [], at = [];
+  (evs || []).forEach(e => { if (e.type === 'round') { dt = e.dt; at = e.at; } });
+  (dt || []).forEach(p => sides[p] = '庄');
+  (at || []).forEach(p => sides[p] = '闲');
+
+  const roleMark = p => sides[p]
+    ? `<span class="s ${sides[p] === '庄' ? 'dz' : 'ak'}">${sides[p]}</span>` : '';
+
+  for (const e of evs) {
+    if (e.type === 'round') {
+      html.push(`<div class="r-hdr">第 ${e.rnd} 局 · 庄家 玩家${e.dealer_pid + 1} · 打 ${e.level}</div>`);
+      html.push(`<div class="r-side">庄家方: ${dt.map(p => `玩家${p + 1}`).join('、')}`
+              + `　│　闲家方: ${at.map(p => `玩家${p + 1}`).join('、')}</div>`);
+    } else if (e.type === 'trump') {
+      html.push(`<div class="lsect">叫主</div>`);
+      if (e.calls && e.calls.length) {
+        const seq = e.calls.map(c =>
+          `<span class="ln">${c.action}<b> 玩家${c.pid + 1}</b> ${c.count}张${c.suit}</span>`).join(' → ');
+        html.push(`<div class="ln">${seq}</div>`);
+        html.push(`<div class="ln">主花色: <b>${SUIT_CN[e.suit] || e.suit || '无主'}</b></div>`);
+      } else {
+        html.push(`<div class="ln dim">无人叫主 → 本局打<b>无主</b></div>`);
+      }
+    } else if (e.type === 'bury') {
+      html.push(`<div class="lsect">埋底 · 庄家(玩家${e.pid + 1}) · 底分 ${e.score}</div>`);
+      html.push(`<div class="pcards">${lpChips(e.cards)}</div>`);
+    } else if (e.type === 'stir') {
+      if (e.items && e.items.length) {
+        e.items.forEach((it, ix) => {
+          html.push(`<div class="lsect">炒底${e.items.length > 1 ? ` ${ix + 1}` : ''} · `
+                  + `玩家${it.pid + 1} 以 <span class="ln p-s">${it.label}</span> 炒底</div>`);
+          html.push(`<div class="ln"><span class="k">换入</span><div class="pcards">${lpChips(it.taken)}</div></div>`);
+          html.push(`<div class="ln"><span class="k">弃出</span><div class="pcards">${lpChips(it.discarded)}</div></div>`);
+        });
+        html.push(`<div class="ln dim">炒底后底分 ${e.final_score}</div>`);
+      } else {
+        html.push(`<div class="lsect">炒底</div>`);
+        html.push(`<div class="ln dim">无人炒底</div>`);
+      }
+    } else if (e.type === 'trick') {
+      html.push(`<div class="trick">`);
+      html.push(`<div class="tk-head">第 ${e.num} 圈${e.pattern_cn ? ` <span class="ptn">· ${e.pattern_cn}</span>` : ''}</div>`);
+      (e.plays || []).forEach(pl => {
+        if (!pl.cards || !pl.cards.length) return;
+        const isWin = pl.pid === e.winner;
+        const note = isWin ? `胜 +${e.score}分`
+                  : pl.action_cn ? pl.action_cn : '';
+        html.push(`<div class="play${isWin ? ' win' : ''}">`);
+        html.push(`  <div class="plab"><b>玩家${pl.pid + 1}</b>${roleMark(pl.pid)}`
+                + `${note ? `<small>${note}</small>` : '<small></small>'}</div>`);
+        html.push(`  <div class="pcards">${lpChips(pl.cards)}</div>`);
+        html.push(`</div>`);
+      });
+      html.push(`</div>`);
+    } else if (e.type === 'settle') {
+      html.push(`<div class="settle">`);
+      html.push(`<div class="ln">闲家得分 <b>${e.attacker_score}</b></div>`);
+      if (e.koudi) {
+        html.push(`<div class="ln dim">抠底 ${e.koudi_pattern_cn || ''} · 底分${e.bottom_score} × ${e.koudi_multiplier}</div>`);
+      }
+      html.push(`<div class="ln">庄家方 ${e.dealer_up ? `+${e.dealer_up}级` : '—'}　│　`
+              + `闲家方 ${e.attacker_up ? `+${e.attacker_up}级` : '—'}</div>`);
+      if (e.side_switch) html.push(`<div class="ln dim">庄权交接 → 新庄家</div>`);
+      html.push(`<div class="r-result">${e.result}</div>`);
+      html.push(`</div>`);
+    }
+  }
+  document.getElementById('logBody').innerHTML = html.join('');
+  document.getElementById('logBody').scrollTop = 0;
+}
+
 function setButtons(running) {
   document.getElementById('btnStart').disabled = running;
   document.getElementById('btnStep').disabled = !running || autoRunning;
   document.getElementById('btnAuto').disabled = !running;
+  updateReplayUI();
 }
 
 async function apiCall(url, data) {
@@ -668,6 +1000,8 @@ async function newGame() {
   gameData = resp;
   modalShownFor = null;
   revealNum = -1; revealShown = 0; animating = false; lastRound = gameData.round;
+  logRnd = -1; logLive = -1;
+  hideLog();
   closeModal();
   setButtons(true);
   render();
@@ -709,6 +1043,8 @@ async function resetGame() {
   gameData = null;
   modalShownFor = null;
   revealNum = -1; revealShown = 0; animating = false; lastRound = -1;
+  logRnd = -1; logLive = -1;
+  hideLog();
   closeModal();
   setButtons(false);
   syncStatus();
@@ -717,7 +1053,13 @@ async function resetGame() {
 
 document.getElementById('btnStart').addEventListener('click', newGame);
 document.getElementById('btnStep').addEventListener('click', doStep);
+document.getElementById('btnPrev').addEventListener('click', doPrev);
 document.getElementById('btnAuto').addEventListener('click', toggleAuto);
+document.getElementById('btnGames').addEventListener('click', openGames);
+document.getElementById('btnLog').addEventListener('click', toggleLog);
+document.getElementById('btnLive').addEventListener('click', doLive);
+document.getElementById('gamesClose').addEventListener('click', closeGames);
+document.getElementById('logClose').addEventListener('click', hideLog);
 document.getElementById('btnReset').addEventListener('click', resetGame);
 document.getElementById('modalContinue').addEventListener('click', doStep);
 document.getElementById('speedSel').addEventListener('change', e => { speed = parseInt(e.target.value, 10) || 400; });

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""三副牌升级 · Web 版 v1.0 — Flask 后端
+"""三副牌升级 · Web 版 v1.2 — Flask 后端
 
 状态机:
   idle → trump → bury → stir → playing → settled → (next round or finish)
@@ -69,6 +69,11 @@ class WebSession:
         self._last_status = '就绪 | 点击「开始」启动游戏'
         self._last_access = time.time()
 
+        self._timeline = []          # 每步快照 (序列化 dict) 的完整时间线
+        self._view = 0               # 当前显示位置 (0..live_steps)
+        self._live_steps = 0         # 引擎已执行步数
+        self._round_start_step = {}  # rnd -> 该局"初始快照"在时间线中的下标
+
     # ==================== 发牌 / 开局 ====================
 
     def init_game(self):
@@ -80,7 +85,11 @@ class WebSession:
         self.winner = None
         self.game_over = False
         self._start_round()
-        return self._get_snapshot()
+        self._timeline = [self._get_snapshot()]
+        self._view = 0
+        self._live_steps = 0
+        self._round_start_step = {1: 0}
+        return self._serve()
 
     def _start_round(self):
         self.rnd += 1
@@ -103,6 +112,12 @@ class WebSession:
         self._stir_computed = False
         self.engine_state = 'trump'
         self._set_status(f"第 {self.rnd} 局 | 庄家=玩家{dealer + 1} | 打 {level}")
+        self.rec.log(f"=== 第{self.rnd}局 | 庄家=玩家{dealer+1} 打{level} ===")
+        self.rec.log(f"庄家方: 玩{dt[0]+1}、玩{dt[1]+1} | 闲家方: 玩{at[0]+1}、玩{at[1]+1}")
+        # 结构化事件流: 前端按局/圈排版对齐展示
+        self.rec.events = []
+        self.rec.events.append({'type': 'round', 'rnd': self.rnd, 'dealer_pid': dealer,
+                                'level': level, 'dt': list(dt), 'at': list(at)})
 
     def _deal(self):
         deck = create_deck()
@@ -117,9 +132,12 @@ class WebSession:
     # ==================== 阶段 ====================
 
     def step(self):
+        if self._view < self._live_steps:          # 回放中前进: 仅移游标
+            self._view += 1
+            return self._serve()
         if self.game_over:
-            self._set_status(f"🏆 游戏结束 | 胜方: {self.winner or '—'}")
-            return self._get_snapshot()
+            return self._serve()
+        prev_rnd = self.rec.rnd if self.rec else None
         if self.engine_state == 'trump':
             self._do_trump()
         elif self.engine_state == 'bury':
@@ -130,7 +148,12 @@ class WebSession:
             self._play_one_trick()
         elif self.engine_state == 'settled':
             self._next_round()
-        return self._get_snapshot()
+        self._live_steps += 1
+        self._timeline.append(self._get_snapshot())   # 归档一步
+        self._view = self._live_steps
+        if self.rec and self.rec.rnd != prev_rnd:     # 跨局: 记录新局起点
+            self._round_start_step[self.rec.rnd] = self._live_steps
+        return self._serve()
 
     def _do_trump(self):
         """亮主/反主: 一次点击只展示一条叫主。全部展示完后下一次点击进入埋底。"""
@@ -142,8 +165,14 @@ class WebSession:
             if calls:
                 rec.trump_method = 'call'
                 rec.call_info = calls[-1]
+                parts = ' → '.join(f"玩{c['pid']+1} {c['count']}张{c['suit']}"
+                                   for c in calls)
+                rec.log(f"【亮主/反主】{parts} → 主花色={SUIT_CN.get(ts, ts)}")
             else:
                 rec.trump_method = 'none'
+                rec.log("【亮主】无人叫主 → 打无主")
+            rec.events.append({'type': 'trump', 'method': rec.trump_method,
+                               'suit': ts, 'calls': [dict(c) for c in calls]})
         total = len(rec.call_history)
         if total == 0:
             if not self._no_call_shown:
@@ -173,6 +202,9 @@ class WebSession:
         bs = sum(SCORE_VALUES.get(c.rank, 0) for c in rec.bottom)
         rec.bottom_score = bs
         self.current_call = None
+        rec.log(f"【埋底】庄家埋: {cards_str(buried)} (底分={bs})")
+        rec.events.append({'type': 'bury', 'pid': pid,
+                           'cards': self._cards_to_dicts(buried), 'score': bs})
         self._set_status(f"📦 埋底: 庄家(玩家{pid + 1}) 埋6张 (底分={bs})")
         self.engine_state = 'stir'
 
@@ -186,6 +218,18 @@ class WebSession:
             rec.bottom = final_bottom
             rec.bottom_score = sum(SCORE_VALUES.get(c.rank, 0) for c in final_bottom)
             self._stir_computed = True
+            for e in events:
+                rec.log(f"【炒底】玩{e['pid']+1} 以{e['label']}炒底: "
+                        f"换入 {cards_str(e['taken'])} | 弃出 {cards_str(e['discarded'])}")
+            if events:
+                rec.log(f"炒底后底牌: {cards_str(final_bottom)} (底分={rec.bottom_score})")
+            else:
+                rec.log("【炒底】无人炒底")
+            rec.events.append({'type': 'stir', 'items': [
+                {'pid': e['pid'], 'label': e['label'],
+                 'taken': self._cards_to_dicts(e['taken']),
+                 'discarded': self._cards_to_dicts(e['discarded'])} for e in events],
+                'final_score': rec.bottom_score})
         total = len(rec.stir_events)
         if total == 0:
             if not self._no_stir_shown:
@@ -254,6 +298,19 @@ class WebSession:
                  'played_actions': actions, 'winner': best_pid, 'winner_side': winner_side,
                  'winner_cards': best_cards, 'pattern': pattern, 'score': score}
         rec.tricks.append(trick)
+        parts = []
+        for (pid, cl), a in zip(played, actions):
+            tag = f"·{ACTION_CN[a]}" if a else ''
+            parts.append(f"玩{pid+1}{tag}:{cards_str(cl)}")
+        rec.log(f"第{trick['num']}圈[{PATTERN_CN.get(pattern, '?')}]: "
+                f"{' | '.join(parts)} → 赢:玩{best_pid+1}({cards_str(best_cards)}) +{score}分")
+        rec.events.append({'type': 'trick', 'num': trick['num'],
+                           'pattern_cn': PATTERN_CN.get(pattern, ''),
+                           'leader': leader,
+                           'plays': [{'pid': pid, 'cards': self._cards_to_dicts(cl),
+                                      'action_cn': ACTION_CN.get(a, '') if a else ''}
+                                     for (pid, cl), a in zip(played, actions)],
+                           'winner': best_pid, 'winner_side': winner_side, 'score': score})
         self.current_trick = trick
         self.trick_leader = best_pid
         self._set_status(f"第 {self.rnd} 局 | 第{trick['num']}圈 [{PATTERN_CN.get(pattern, '')}] "
@@ -267,6 +324,15 @@ class WebSession:
         rec.attacker_score = sum(tr['score'] for tr in rec.tricks
                                  if tr['winner_side'] == 'attacker')
         settle_round(rec, self)
+        rec.log(f"结算: 闲家得分={rec.attacker_score} "
+                f"庄方+{rec.dealer_up} 闲方+{rec.attacker_up} | {rec.result}")
+        rec.events.append({'type': 'settle', 'attacker_score': rec.attacker_score,
+                           'dealer_up': rec.dealer_up, 'attacker_up': rec.attacker_up,
+                           'result': rec.result, 'side_switch': rec.side_switch,
+                           'koudi': rec.koudi, 'bottom_score': rec.bottom_score,
+                           'koudi_multiplier': rec.koudi_multiplier,
+                           'koudi_pattern_cn': (PATTERN_CN.get(rec.tricks[-1]['pattern'], '')
+                                                if rec.koudi and rec.tricks else '')})
         self.records.append(rec)
         self.engine_state = 'settled'
         self._set_status(f"📊 结算 | 闲家得分={rec.attacker_score} | {rec.result}")
@@ -276,6 +342,36 @@ class WebSession:
             self._set_status(f"🏆 游戏结束 | 胜方: {self.winner or '—'}")
             return
         self._start_round()
+
+    # ==================== 回放 (快照时间线 + 视图游标) ====================
+
+    def _serve(self):
+        """返回当前 view 的快照, 并覆盖游标字段 (历史快照里的 view/live_steps 是旧值)"""
+        snap = dict(self._timeline[self._view])
+        snap['view'] = self._view
+        snap['live_steps'] = self._live_steps
+        snap['replay'] = self._view < self._live_steps    # 是否回放态
+        snap['can_prev'] = self._view > 0
+        return snap
+
+    def prev_step(self):
+        """上一步: 只移动游标, 引擎状态不动"""
+        if self._view > 0:
+            self._view -= 1
+        return self._serve()
+
+    def replay_round(self, rnd):
+        """回放某一局: 跳到该局初始快照"""
+        start = self._round_start_step.get(rnd)
+        if start is None:
+            return None
+        self._view = start
+        return self._serve()
+
+    def live(self):
+        """退出回放: 回到直播前沿 (只移动游标, 引擎状态不动)"""
+        self._view = self._live_steps
+        return self._serve()
 
     # ==================== 序列化 ====================
 
@@ -436,7 +532,102 @@ def api_status():
     if not sess:
         return jsonify({'error': 'session not found'}), 404
     sess._last_access = time.time()
-    return jsonify(sess._get_snapshot())
+    return jsonify(sess._serve())
+
+
+@app.route('/api/prev', methods=['POST'])
+def api_prev():
+    sid = request.json.get('session_id')
+    _cleanup_sessions()
+    sess = sessions.get(sid)
+    if not sess:
+        return jsonify({'error': 'session not found'}), 404
+    sess._last_access = time.time()
+    return jsonify(sess.prev_step())
+
+
+@app.route('/api/replay', methods=['POST'])
+def api_replay():
+    data = request.json or {}
+    sid = data.get('session_id')
+    rnd = data.get('rnd')
+    _cleanup_sessions()
+    sess = sessions.get(sid)
+    if not sess:
+        return jsonify({'error': 'session not found'}), 404
+    sess._last_access = time.time()
+    snap = sess.replay_round(rnd)
+    if snap is None:
+        return jsonify({'error': 'round not found'}), 404
+    return jsonify(snap)
+
+
+@app.route('/api/live', methods=['POST'])
+def api_live():
+    sid = request.json.get('session_id')
+    _cleanup_sessions()
+    sess = sessions.get(sid)
+    if not sess:
+        return jsonify({'error': 'session not found'}), 404
+    sess._last_access = time.time()
+    return jsonify(sess.live())
+
+
+def _game_row(sess, rec, in_progress):
+    """对局记录一行: 级牌/获胜方/得分数/升级数 (获胜方由结算结果推导)"""
+    result = rec.result
+    if result.startswith('队伍A'):
+        winner = '队伍A'
+    elif result.startswith('队伍B'):
+        winner = '队伍B'
+    elif result.startswith('庄家'):
+        winner = '庄家方'
+    else:
+        winner = '闲家方'
+    return {
+        'rnd': rec.rnd,
+        'level': rec.level,                      # 本局级牌
+        'winner': '进行中' if in_progress else winner,
+        'score': None if in_progress else rec.attacker_score,
+        'dealer_up': rec.dealer_up,
+        'attacker_up': rec.attacker_up,
+        'start_step': sess._round_start_step.get(rec.rnd),
+        'result': rec.result,
+        'in_progress': in_progress,
+    }
+
+
+@app.route('/api/games', methods=['GET'])
+def api_games():
+    sid = request.args.get('session_id')
+    _cleanup_sessions()
+    sess = sessions.get(sid)
+    if not sess:
+        return jsonify({'error': 'session not found'}), 404
+    sess._last_access = time.time()
+    games = [_game_row(sess, rec, False) for rec in sess.records]
+    if sess.rec and sess.rec.rnd > len(sess.records):
+        games.append(_game_row(sess, sess.rec, True))
+    return jsonify({'games': games})
+
+
+@app.route('/api/logs', methods=['GET'])
+def api_logs():
+    sid = request.args.get('session_id')
+    rnd = request.args.get('rnd', type=int)
+    _cleanup_sessions()
+    sess = sessions.get(sid)
+    if not sess:
+        return jsonify({'error': 'session not found'}), 404
+    sess._last_access = time.time()
+    if sess.rec and rnd == sess.rec.rnd:
+        rec = sess.rec
+    elif 1 <= (rnd or 0) <= len(sess.records):
+        rec = sess.records[rnd - 1]
+    else:
+        return jsonify({'error': 'round not found'}), 404
+    return jsonify({'rnd': rnd, 'events': getattr(rec, 'events', []),
+                    'logs': rec.logs})
 
 
 @app.route('/api/reset', methods=['POST'])
@@ -453,6 +644,6 @@ if __name__ == '__main__':
     parser.add_argument('--no-debug', action='store_true')
     parser.add_argument('--port', type=int, default=5000)
     args = parser.parse_args()
-    print("== 三副牌升级 Web v1.0 ==")
+    print("== 三副牌升级 Web v1.2 ==")
     print(f"  -> http://localhost:{args.port}")
     app.run(host='0.0.0.0', port=args.port, debug=not args.no_debug)
